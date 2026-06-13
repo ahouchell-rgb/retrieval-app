@@ -2958,6 +2958,10 @@ function Teacher({ user, isMod, isHoD }) {
         tp: Object.entries(tp).map(([name, d]) => ({ name, ...d, pct: d.t ? Math.round(d.c / d.t * 100) : 0 })).sort((a, b) => a.pct - b.pct),
         mems: mems.length,
         flags,
+        // How many unresolved flags each question has — surfaces "bad question"
+        // signals (several students disputing the same question). Derived from
+        // the flags already fetched: no extra query.
+        flagCounts: flags.reduce((m, f) => { if (f.question_id) m[f.question_id] = (m[f.question_id] || 0) + 1; return m; }, {}),
       });
     } catch (e) { console.error(e); }
   };
@@ -3384,12 +3388,13 @@ function Teacher({ user, isMod, isHoD }) {
                   </div>
 
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {dash.flags.map(f => {
+                    {[...dash.flags].sort((a, b) => (dash.flagCounts?.[b.question_id] || 1) - (dash.flagCounts?.[a.question_id] || 1)).map(f => {
                       const isOpen = expandedFlag === f.id;
                       const busy = flagBusy === f.id;
                       const studentName = f.profiles?.display_name || "?";
                       const qText = f.questions?.question_text || "(question missing)";
                       const maxMarks = f.questions?.marks ?? 1;
+                      const dupCount = dash.flagCounts?.[f.question_id] || 1;
                       return (
                         <div key={f.id} style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 4 }}>
                           {/* Row header — always visible */}
@@ -3402,6 +3407,11 @@ function Teacher({ user, isMod, isHoD }) {
                               <div style={{ fontSize: 11, color: C.mid, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                 {qText}
                               </div>
+                              {dupCount >= 2 && (
+                                <div style={{ fontSize: 10, color: C.amb, fontWeight: 700, marginTop: 2, whiteSpace: "normal" }}>
+                                  ⚠ {dupCount} students flagged this question — review the model answer
+                                </div>
+                              )}
                             </div>
                             <span style={{ fontSize: 11, color: C.dim, marginLeft: 10, whiteSpace: "nowrap" }}>
                               {isOpen ? "−" : "+"} {new Date(f.created_at).toLocaleDateString()}
