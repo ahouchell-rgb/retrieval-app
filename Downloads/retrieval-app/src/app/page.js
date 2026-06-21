@@ -9,6 +9,7 @@ import { Teacher } from "../components/Teacher";
 import { Badge, Btn } from "../components/ui";
 import { sb } from "../lib/supabase";
 import { attachProfile, isTeacher, roleColor, roleLabel } from "../lib/roles";
+import { consumeAnonFromUrl } from "../lib/anonSession";
 import { C } from "../lib/theme";
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
   const [recovery, setRecovery] = useState(false);   // arrived via a password-reset email link
   const [showAccount, setShowAccount] = useState(false);
   const [showSupport, setShowSupport] = useState(false);
+  const [welcome, setWelcome] = useState(null);   // arrived from a public interactive-science booklet
 
   // Re-establish a persisted session on load so a refresh doesn't bounce to login.
   useEffect(() => {
@@ -41,10 +43,25 @@ export default function App() {
     if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("login")) setShowLogin(true);
   }, []);
 
+  // Arrival from a public interactive-science booklet (?isci=1&att=…&cor=…): show
+  // the signup form with a continuity banner, then strip the params so a refresh
+  // doesn't re-trigger it. The handoff carries counts only — see lib/anonSession.
+  useEffect(() => {
+    const w = consumeAnonFromUrl();
+    if (!w) return;
+    setWelcome(w);
+    setShowLogin(true);
+    try {
+      const url = new URL(window.location.href);
+      ["isci", "att", "cor", "from", "topic"].forEach((k) => url.searchParams.delete(k));
+      window.history.replaceState(null, "", url.pathname + (url.search ? url.search : "") + url.hash);
+    } catch { /* ignore */ }
+  }, []);
+
   if (restoring) return <div style={{ minHeight: "100dvh", background: C.bg }} />;
   if (recovery) return <ResetPassword onDone={() => { setRecovery(false); setShowLogin(true); }} />;
   if (!user) return showLogin
-    ? <Auth onAuth={setUser} onBack={() => setShowLogin(false)} />
+    ? <Auth onAuth={setUser} onBack={() => { setShowLogin(false); setWelcome(null); }} welcome={welcome} />
     : <Landing onLogin={() => setShowLogin(true)} />;
   const teacherSide = isTeacher(user);
 

@@ -6,8 +6,11 @@ import { C } from "../lib/theme";
 import { Btn, Card, Inp } from "./ui";
 
 /* ─── AUTH ─── */
-export function Auth({ onAuth, onBack }) {
-  const [mode, setMode] = useState("login");
+// `welcome` (optional): a summary handed off from a public interactive-science
+// booklet (see lib/anonSession.consumeAnonFromUrl). When present we open on the
+// signup tab and show a continuity banner — the "claim your progress" bridge.
+export function Auth({ onAuth, onBack, welcome }) {
+  const [mode, setMode] = useState(welcome ? "signup" : "login");
   const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [name, setName] = useState(""); const [role, setRole] = useState("student");
   const [err, setErr] = useState(""); const [info, setInfo] = useState(""); const [busy, setBusy] = useState(false);
 
@@ -41,6 +44,14 @@ export function Auth({ onAuth, onBack }) {
           <div style={{ fontSize: 30, fontWeight: 800, color: C.txt, letterSpacing: -0.5 }}>Feynman<span style={{ color: C.pri }}> Education</span></div>
           <div style={{ fontFamily: C.serif, fontStyle: "italic", fontSize: 14, color: C.dim, marginTop: 6 }}>Retrieval practice that sticks</div>
         </div>
+        {welcome && (
+          <div style={{ marginBottom: 16, padding: "14px 16px", background: C.grnS, border: `1px solid ${C.grn}`, borderRadius: 8, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".08em", color: C.grn, marginBottom: 4 }}>Welcome from interactive&#8209;science</div>
+            <div style={{ fontSize: 14, color: C.txt }}>
+              You practised {welcome.attempted} question{welcome.attempted === 1 ? "" : "s"}{welcome.attempted ? ` (${welcome.correct} correct)` : ""}{welcome.topicName ? ` on ${welcome.topicName}` : ""}. Create a free account to keep your streak going and get these spaced back to you.
+            </div>
+          </div>
+        )}
         <Card style={{ padding: "28px 24px" }}>
           {mode === "forgot" ? (
             <div style={{ marginBottom: 18 }}>
