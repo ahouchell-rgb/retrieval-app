@@ -300,5 +300,26 @@ export const sb = (() => {
       return true;
     },
   };
-  return { q, del, qAll, rpc, auth, submitAnswer, flushAnswers, pendingAnswers: () => readPending().length };
+  /* ─── Public revision-booklet map (topic_id -> booklet) ───
+   * Loads the anon-readable topic_booklets table once and caches it, so any
+   * weak-topic surface can offer a "Revise this →" deep-link to the matching
+   * public interactive-science.com booklet. Closes the loop: practice reveals
+   * the gap, the booklet revises it. Best-effort — never throws to the caller. */
+  let bookletMap = null, bookletLoading = null;
+  const loadBooklets = () => {
+    if (bookletMap) return Promise.resolve(bookletMap);
+    if (!bookletLoading) {
+      bookletLoading = q("topic_booklets", { params: { select: "topic_id,slug,url" } })
+        .then((rows) => {
+          bookletMap = {};
+          (Array.isArray(rows) ? rows : []).forEach((r) => { if (r?.topic_id) bookletMap[r.topic_id] = r; });
+          return bookletMap;
+        })
+        .catch(() => { bookletMap = {}; return bookletMap; });
+    }
+    return bookletLoading;
+  };
+  const bookletFor = (topicId) => (bookletMap && topicId ? bookletMap[topicId] || null : null);
+
+  return { q, del, qAll, rpc, auth, submitAnswer, flushAnswers, pendingAnswers: () => readPending().length, loadBooklets, bookletFor };
 })();

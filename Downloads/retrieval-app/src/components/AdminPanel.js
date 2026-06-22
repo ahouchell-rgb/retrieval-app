@@ -5,6 +5,7 @@ import { isStudent, isTeacher } from "../lib/roles";
 import { C } from "../lib/theme";
 import { Teacher } from "./Teacher";
 import { CostDashboard } from "./CostDashboard";
+import { FunnelDashboard } from "./FunnelDashboard";
 import { SchoolsPanel } from "./SchoolsPanel";
 import { Badge, Btn, Headline, Inp, Pill, Stat, StatTile } from "./ui";
 
@@ -162,7 +163,7 @@ export function AdminPanel({ user }) {
 
       {/* View tabs */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto" }}>
-        {[{ k: "overview", l: "Overview" }, { k: "teachers", l: "All teachers" }, { k: "students", l: "All students" }, { k: "unjoined", l: `Unjoined${unjoinedStudents.length > 0 ? ` (${unjoinedStudents.length})` : ""}` }, { k: "support", l: `Support${openCount > 0 ? ` (${openCount})` : ""}` }, { k: "schools", l: "Schools & plans" }, { k: "costs", l: "Costs" }, { k: "aiusage", l: "AI usage" }, { k: "cache", l: "Cache health" }].map(t => (
+        {[{ k: "overview", l: "Overview" }, { k: "teachers", l: "All teachers" }, { k: "students", l: "All students" }, { k: "unjoined", l: `Unjoined${unjoinedStudents.length > 0 ? ` (${unjoinedStudents.length})` : ""}` }, { k: "support", l: `Support${openCount > 0 ? ` (${openCount})` : ""}` }, { k: "schools", l: "Schools & plans" }, { k: "costs", l: "Costs" }, { k: "funnel", l: "Booklet funnel" }, { k: "aiusage", l: "AI usage" }, { k: "cache", l: "Cache health" }].map(t => (
           <Pill key={t.k} on={view === t.k} onClick={() => setView(t.k)} style={{ fontSize: 12, padding: "6px 12px" }}>{t.l}</Pill>
         ))}
       </div>
@@ -466,6 +467,8 @@ export function AdminPanel({ user }) {
       {view === "costs" && (
         <CostDashboard students={students} classes={classes} teachers={teachers} responses30d={responses30d} />
       )}
+
+      {view === "funnel" && <FunnelDashboard />}
 
       {/* AI USAGE — real cache hit rate from logged Anthropic usage */}
       {view === "aiusage" && (() => {

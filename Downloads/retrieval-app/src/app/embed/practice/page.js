@@ -4,7 +4,22 @@ import { useSearchParams } from "next/navigation";
 import { sb, SUPA_URL, SUPA_KEY } from "../../../lib/supabase";
 import { C } from "../../../lib/theme";
 import { Card, Btn, Badge, TA, Kicker, Headline } from "../../../components/ui";
-import { recordAnon, readAnon, handoffUrl } from "../../../lib/anonSession";
+import { recordAnon, readAnon, handoffUrl, sessionId } from "../../../lib/anonSession";
+
+/* Fire-and-forget funnel telemetry (booklet_viewed → widget_opened →
+ * question_answered → signup_clicked). Best-effort: never blocks, never throws.
+ * keepalive lets signup_clicked land even as the new tab opens. */
+function emitFunnel(event, data = {}) {
+  if (typeof window === "undefined") return;
+  try {
+    fetch(`${SUPA_URL}/functions/v1/emit-funnel-event`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SUPA_KEY },
+      body: JSON.stringify({ event, session_id: sessionId(), ...data }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch { /* ignore */ }
+}
 
 /* /embed/practice — the LIVE, answerable retrieval widget embedded (cross-origin,
  * via iframe) into the interactive-science.com revision booklets.
@@ -62,11 +77,16 @@ function PracticeInner() {
       } catch { if (live) setTopic(null); }
       try {
         const qs = await sb.rpc("topic_preview_questions", { p_topic_id: topicId });
-        if (live) setQuestions(Array.isArray(qs) ? qs : []);
+        const list = Array.isArray(qs) ? qs : [];
+        if (live) setQuestions(list);
+        if (live && list.length) emitFunnel("widget_opened", { ref, from_source: from, topic_id: topicId });
       } catch { if (live) setQuestions([]); }
     })();
     return () => { live = false; };
   }, [topicId]);
+
+  // Funnel: a real human opened this embed (fires once).
+  useEffect(() => { emitFunnel("booklet_viewed", { ref, from_source: from, topic_id: topicId }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const q = Array.isArray(questions) ? questions[idx] : null;
 
@@ -96,6 +116,7 @@ function PracticeInner() {
       setResult(verdict);
       const s = recordAnon({ correct: !!verdict.correct, marks: verdict.marks_awarded, topic: topicId, topicName: topic?.name, ref, from });
       setSession(s);
+      emitFunnel("question_answered", { ref, from_source: from, topic_id: topicId, topic_name: topic?.name, correct: !!verdict.correct, marks_awarded: verdict.marks_awarded });
     } catch {
       setResult({ error: true, feedback: "Couldn't reach the marker — check your connection and try again." });
     } finally {
@@ -130,6 +151,7 @@ function PracticeInner() {
   }
 
   const openApp = (hash = "") => {
+    emitFunnel("signup_clicked", { ref, from_source: from, topic_id: topicId, topic_name: topic?.name });
     const url = handoffUrl(typeof window !== "undefined" ? window.location.origin : "https://retrieval-app.com", session || { ref, from, topicName: topic?.name });
     if (typeof window !== "undefined") window.open(url + hash, "_blank", "noopener");
   };

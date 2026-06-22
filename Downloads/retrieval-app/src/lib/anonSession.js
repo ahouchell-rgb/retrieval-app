@@ -16,6 +16,21 @@
  * being recorded as a grade. */
 
 const KEY = "retrieval.anonPractice";
+const SID = "retrieval.anonSid";
+
+// Stable id for this anonymous visitor, so funnel events (booklet_viewed →
+// answered → signup_clicked) can be stitched into a session. Best-effort.
+export function sessionId() {
+  if (typeof window === "undefined") return null;
+  try {
+    let id = window.localStorage.getItem(SID);
+    if (!id) {
+      id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      window.localStorage.setItem(SID, id);
+    }
+    return id;
+  } catch { return null; }
+}
 
 export function readAnon() {
   if (typeof window === "undefined") return null;

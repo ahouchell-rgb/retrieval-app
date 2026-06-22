@@ -21,13 +21,16 @@ export function ClassGaps({ cls }) {
     let live = true;
     if (!cls?.id) { setRows([]); return; }
     setRows(null); setErr(null);
-    sb.q("class_weak_objectives", { params: {
-      class_id: `eq.${cls.id}`,
-      weakness_rank: "lte.6",
-      order: "weakness_rank.asc",
-      select: "topic_id,topic_name,pct_correct,marked,students,last_seen,unit_code,unit_title",
-    } })
-      .then(d => { if (live) setRows(Array.isArray(d) ? d : []); })
+    Promise.all([
+      sb.q("class_weak_objectives", { params: {
+        class_id: `eq.${cls.id}`,
+        weakness_rank: "lte.6",
+        order: "weakness_rank.asc",
+        select: "topic_id,topic_name,pct_correct,marked,students,last_seen,unit_code,unit_title",
+      } }),
+      sb.loadBooklets().catch(() => null), // so each gap can offer a "Revise this topic" booklet link
+    ])
+      .then(([d]) => { if (live) setRows(Array.isArray(d) ? d : []); })
       .catch(e => { if (live) { setErr(e.message || "Could not load gaps"); setRows([]); } });
     return () => { live = false; };
   }, [cls?.id]);
@@ -120,6 +123,7 @@ export function ClassGaps({ cls }) {
         const pct = Math.round(r.pct_correct);
         const col = pct >= 70 ? C.grn : pct >= 50 ? C.amb : C.red;
         const unit = r.unit_title || r.unit_code;
+        const bk = sb.bookletFor(r.topic_id);
         return (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderTop: i ? `1px solid ${C.bdrSoft}` : "none" }}>
             <div style={{ fontFamily: C.serif, fontSize: 22, fontWeight: 600, color: col, minWidth: 46, textAlign: "right", letterSpacing: "-0.02em" }}>{pct}%</div>
@@ -127,6 +131,7 @@ export function ClassGaps({ cls }) {
               <div style={{ fontSize: 13, fontWeight: 600, color: C.txt, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.topic_name}</div>
               <div style={{ marginTop: 5 }}><Bar pct={pct} label={r.topic_name} /></div>
               <div style={{ marginTop: 5, fontSize: 10, color: C.dim, letterSpacing: ".02em" }}>{r.marked} marked · {r.students} pupil{r.students === 1 ? "" : "s"} · last {fmtDate(r.last_seen)}</div>
+              {bk && <a href={bk.url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 5, fontSize: 11, fontWeight: 600, color: C.pri, textDecoration: "none" }}>📖 Revise this topic ↗</a>}
             </div>
             {unit
               ? <Badge color={C.acc} style={{ flexShrink: 0 }}>{unit}</Badge>

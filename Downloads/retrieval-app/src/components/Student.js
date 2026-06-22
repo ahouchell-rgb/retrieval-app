@@ -305,6 +305,10 @@ export function Student({ user }) {
         setTopicResources(trMap);
       } catch (e) { console.error("resource load failed", e); setTopicResources({}); }
 
+      // Public revision booklets keyed by topic — adds a "Revision booklet →" link
+      // to each weak spot (the reverse of the booklet → practice loop).
+      try { await sb.loadBooklets(); } catch { /* booklets are best-effort */ }
+
       setQs(sortQuestions(questions, srMap, recencyBoost, new Set()));
       setQi(0); setAns(""); setRes(null);
       setStats({ t: resps.length, c: resps.filter(r => r.is_correct).length });
@@ -610,8 +614,8 @@ export function Student({ user }) {
   // interactive-science tool/booklet — surfaced back to the learner, not just the teacher.
   const weakSpots = topicStats
     .filter(t => !t.isPlaceholder && t.t > 0 && t.topicId)
-    .map(t => ({ ...t, pct: Math.round((t.c / t.t) * 100), resources: topicResources[t.topicId] || [] }))
-    .filter(t => t.pct < 70 && t.resources.length > 0)
+    .map(t => ({ ...t, pct: Math.round((t.c / t.t) * 100), resources: topicResources[t.topicId] || [], booklet: sb.bookletFor(t.topicId) }))
+    .filter(t => t.pct < 70 && (t.resources.length > 0 || t.booklet))
     .slice(0, 4);
 
   // ── Paper-taking flow: when the student has tapped a paper, swap the entire
@@ -697,6 +701,13 @@ export function Student({ user }) {
                       <span style={{ opacity: 0.55, fontWeight: 400 }}>↗</span>
                     </a>
                   ))}
+                  {t.booklet && (
+                    <a href={t.booklet.url} target="_blank" rel="noopener noreferrer"
+                      style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 12px", borderRadius: 99, border: `1px solid ${C.pri}`, background: C.priSoftBg, color: C.priDeep, fontSize: 12, fontWeight: 600, textDecoration: "none", fontFamily: "inherit" }}>
+                      📖 Revision booklet
+                      <span style={{ opacity: 0.55, fontWeight: 400 }}>↗</span>
+                    </a>
+                  )}
                 </div>
               </div>
             ))}
