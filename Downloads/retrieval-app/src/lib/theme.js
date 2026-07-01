@@ -1,23 +1,28 @@
 
-/* ─── Theme — D2 brighter (editorial register, vivid accents) ─── */
+/* ─── Theme — product dashboard register, with editorial accents ─── */
 export const C = {
-  // Surfaces (warm cream, kept close to existing so muscle memory still works)
-  bg: "#faf7f0", card: "#FFFFFF", card2: "#f5f1e6",
-  // Rules / borders — two weights
-  bdr: "#d4cdb8", bdrSoft: "#e8e3d6",
-  // Primary — vivid book-red, brand accent
-  pri: "#c8362d", priDeep: "#a8281f", priSoft: "rgba(200,54,45,0.08)", priSoftBg: "#fae8e3",
-  // Status colours — pushed brighter than v1
-  grn: "#16a558", grnS: "rgba(22,165,88,0.10)", grnSoft: "#d6f0e0",
-  red: "#e54a26", redS: "rgba(229,74,38,0.10)", redSoft: "#fbe1d6",
-  amb: "#e88019", ambS: "rgba(232,128,25,0.10)", ambSoft: "#fbe9d2",
-  // Text shades — three steps
-  txt: "#1c1a14", mid: "#6f6a5c", dim: "#a8a294",
+  // Surfaces
+  bg: "#f4f6f8", card: "#ffffff", card2: "#eef2f5",
+  panel: "#111820", panel2: "#182331",
+  // Rules / borders
+  bdr: "#d8dee5", bdrSoft: "#e8edf2",
+  // Primary — retained as the Feynman priority/brand colour
+  pri: "#c93b32", priDeep: "#a92d25", priSoft: "rgba(201,59,50,0.09)", priSoftBg: "#fff0ed",
+  // Status colours
+  grn: "#16835e", grnS: "rgba(22,131,94,0.10)", grnSoft: "#e8f5ef",
+  red: "#c93b32", redS: "rgba(201,59,50,0.10)", redSoft: "#fff0ed",
+  amb: "#ad6b12", ambS: "rgba(173,107,18,0.12)", ambSoft: "#fff3dc",
+  blue: "#2857c5", blueS: "rgba(40,87,197,0.10)", blueSoft: "#eaf0ff",
+  teal: "#087b83", tealS: "rgba(8,123,131,0.10)", tealSoft: "#e7f5f6",
+  // Text shades
+  txt: "#14171a", mid: "#68717c", dim: "#9ba5b0",
   // Accent (used sparingly for variation — e.g. student "answered" stat)
-  acc: "#5246c4", accSoft: "#e3e0f5",
+  acc: "#2857c5", accSoft: "#eaf0ff",
+  shadow: "0 18px 55px rgba(20,23,26,0.10)",
+  radius: 8,
   // Fonts
   serif: "var(--font-serif), Georgia, serif",
   sans:  "var(--font-plex), -apple-system, sans-serif",
   // priGlow kept for backwards compat with anything referencing it
-  priGlow: "rgba(200,54,45,0.15)",
+  priGlow: "rgba(201,59,50,0.18)",
 };

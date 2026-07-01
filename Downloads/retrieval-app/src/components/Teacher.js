@@ -574,17 +574,17 @@ export function Teacher({ user }) {
   };
 
   return (
-    <div style={{ maxWidth: 700, margin: "0 auto", padding: "12px 16px" }}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
+    <div style={{ maxWidth: 1180, margin: "0 auto", padding: "18px 18px 60px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 360px) minmax(0, 1fr)", gap: 12, marginBottom: 18, alignItems: "start" }}>
         <div style={{ display: "flex", gap: 8 }}>
           <select value={cls?.id || ""} onChange={async e => { const c = classes.find(x => x.id === e.target.value); setCls(c); if (c) await loadCls(c); }}
-            style={{ flex: 1, padding: "10px 12px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 10, color: C.txt, fontSize: 14, outline: "none" }}>
+            style={{ flex: 1, padding: "10px 12px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 14, outline: "none", minHeight: 40 }}>
             <option value="">Select class...</option>
             {classes.map(c => <option key={c.id} value={c.id}>{c.name}{c.year_group ? ` (Y${c.year_group})` : ""}</option>)}
           </select>
           <Btn v="ghost" onClick={() => setSetup("class")} style={{ padding: "10px 14px", fontSize: 13, whiteSpace: "nowrap" }}>+ New</Btn>
         </div>
-        <div style={{ display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2 }}>
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2, justifyContent: "flex-end" }}>
           {[...(showDept ? ["hod"] : []), ...["dashboard", "review", "starter", "topics", "questions", "papers"], ...(isMod ? ["admin"] : [])].map(t => <Pill key={t} on={tab === t} onClick={() => setTab(t)} style={t === "admin" ? { borderColor: C.pri, color: tab === t ? C.pri : C.pri } : (t === "hod" ? { borderColor: C.amb, color: tab === t ? C.amb : C.amb } : undefined)}>{t === "starter" ? "Lesson Starter" : t === "admin" ? "Admin" : t === "hod" ? "Department" : t === "papers" ? "Papers" : t === "review" ? "Review marks" : t.charAt(0).toUpperCase() + t.slice(1)}</Pill>)}
         </div>
       </div>
@@ -707,15 +707,15 @@ export function Teacher({ user }) {
             <div>
               {/* Editorial header — dateline + standfirst, matches the HoD panel */}
               <Dateline left={cls.name || "Class"} right={new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })} style={{ marginBottom: 16 }} />
-              <div style={{ marginBottom: 20, paddingBottom: 16, borderBottom: `1px solid ${C.bdr}`, display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
                 <div>
                   <Kicker>Class dashboard</Kicker>
-                  <Headline size={22} style={{ marginBottom: 6 }}>{cls.name || "Your class"}</Headline>
+                  <Headline size={30} style={{ marginBottom: 6 }}>{cls.name || "Your class"}</Headline>
                   <Deck>{dash.mems} student{dash.mems !== 1 ? "s" : ""} enrolled.</Deck>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".14em", textTransform: "uppercase", color: C.dim, marginBottom: 4 }}>Join code</div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: C.pri, letterSpacing: 4, fontFamily: "monospace", lineHeight: 1 }}>{cls.join_code || "..."}</div>
+                <div style={{ textAlign: "right", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.dim, marginBottom: 5 }}>Join code</div>
+                  <div style={{ fontSize: 24, fontWeight: 800, color: C.pri, letterSpacing: 4, fontFamily: "monospace", lineHeight: 1 }}>{cls.join_code || "..."}</div>
                   <div style={{ marginTop: 12, display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}>
                     <span style={{ fontSize: 11, color: C.dim }}>Export</span>
                     <button onClick={exportSummaryCsv} disabled={!dash || dash.students.length === 0}
@@ -737,31 +737,63 @@ export function Teacher({ user }) {
                 </div>
               </div>
 
-              {/* ACTION HERO — concerns lead the dashboard (v4 hierarchy) */}
+              {/* Command centre — decisions lead the dashboard */}
               {(() => {
                 const atRisk = dash.students.filter(s => { const h = s.weeklyHistory; return h && h.length >= 2 && h[0].valid === 0 && h[1].valid === 0; });
-                if (atRisk.length === 0) return (
-                  <Card style={{ padding: "14px 16px", marginBottom: 12, borderColor: `${C.grn}55`, background: C.grnS, display: "flex", alignItems: "center", gap: 10 }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.grn} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-                    <div><div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".16em", textTransform: "uppercase", color: C.grn }}>All clear</div><div style={{ fontFamily: C.serif, fontSize: 15, color: C.txt, marginTop: 3 }}>No students need chasing this week</div></div>
-                  </Card>
-                );
+                const pd = dash.thisWeek || { total: 0, correct: 0 };
+                const pct = pd.total > 0 ? Math.round(pd.correct / pd.total * 100) : 0;
+                const weakestTopic = dash.tp?.[0];
+                const queue = [
+                  ...atRisk.slice(0, 3).map(s => {
+                    const lastActive = s.weeklyHistory?.findIndex(w => w.valid > 0);
+                    const weeksAgo = (lastActive === -1 || lastActive === undefined) ? "Never active" : lastActive === 0 ? "This week" : `${lastActive}w ago`;
+                    return { key: `risk-${s.id}`, tone: C.red, label: "Nudge", title: `${s.name} needs a practice nudge`, detail: `Last active: ${weeksAgo}` };
+                  }),
+                  ...(dash.flags || []).slice(0, 2).map(f => ({ key: `flag-${f.id}`, tone: C.amb, label: "Review", title: `${f.profiles?.display_name || "Student"} appealed a mark`, detail: f.questions?.question_text || "Open marking flag" })),
+                  ...(weakestTopic ? [{ key: "weakest", tone: C.blue, label: "Teach next", title: `${weakestTopic.name} is the weakest topic`, detail: `${weakestTopic.pct}% accuracy across ${weakestTopic.t} answers` }] : []),
+                ].slice(0, 4);
                 return (
-                  <Card style={{ padding: "16px 18px", marginBottom: 12, borderColor: `${C.red}55`, borderLeft: `4px solid ${C.red}`, background: C.redS }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={C.red} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4M12 17h.01" /><path d="M10.3 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.7 3.86a2 2 0 0 0-3.4 0Z" /></svg>
-                      <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".16em", textTransform: "uppercase", color: C.red }}>Needs your attention</span>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginTop: 10, marginBottom: 12 }}>
-                      <span style={{ fontFamily: C.serif, fontSize: 40, fontWeight: 600, lineHeight: .9, color: C.red, fontVariantNumeric: "tabular-nums" }}>{atRisk.length}</span>
-                      <span style={{ fontFamily: C.serif, fontSize: 15, lineHeight: 1.25, color: C.txt }}>{atRisk.length === 1 ? "student hasn't" : "students haven't"} practised in 2+ weeks</span>
-                    </div>
-                    {atRisk.map((s, i) => { const lastActive = s.weeklyHistory?.findIndex(w => w.valid > 0); const weeksAgo = (lastActive === -1 || lastActive === undefined) ? "Never active" : lastActive === 0 ? "This week" : `${lastActive}w ago`; return (
-                      <div key={s.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderTop: `1px solid ${C.red}22` }}>
-                        <span style={{ fontSize: 13, color: C.txt, fontWeight: 500 }}>{s.name}</span>
-                        <span style={{ fontSize: 11, color: C.red, fontWeight: 600 }}>Last active: {weeksAgo}</span>
+                  <Card style={{ marginBottom: 16, overflow: "hidden", borderColor: "#cdd6df" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.4fr) minmax(280px, .9fr)" }}>
+                      <div style={{ padding: 22 }}>
+                        <Badge color={queue.length ? C.red : C.grn}>{queue.length ? `${queue.length} priority item${queue.length === 1 ? "" : "s"}` : "All clear"}</Badge>
+                        <Headline size={30} style={{ marginTop: 12, marginBottom: 8 }}>
+                          {queue.length ? `${atRisk.length || dash.flags?.length || 1} thing${(atRisk.length || dash.flags?.length || 1) === 1 ? "" : "s"} need attention before Friday.` : "No students need chasing this week."}
+                        </Headline>
+                        <Deck style={{ maxWidth: 620 }}>
+                          Start with the queue, then use the deeper analytics below only when you need the evidence.
+                        </Deck>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 18 }}>
+                          {[
+                            { l: "This week", n: pd.total, c: C.txt, h: "answers" },
+                            { l: "Accuracy", n: `${pct}%`, c: pct >= 70 ? C.grn : pct >= 50 ? C.amb : pd.total ? C.red : C.dim, h: "current" },
+                            { l: "Below target", n: atRisk.length, c: atRisk.length ? C.red : C.grn, h: "students" },
+                            { l: "Open reviews", n: dash.flags?.length || 0, c: dash.flags?.length ? C.amb : C.grn, h: "marks" },
+                          ].map(m => (
+                            <div key={m.l} style={{ background: C.bg, border: `1px solid ${C.bdrSoft}`, borderRadius: 8, padding: 13 }}>
+                              <div style={{ fontSize: 11, color: C.mid, fontWeight: 700 }}>{m.l}</div>
+                              <div style={{ fontSize: 30, fontWeight: 800, color: m.c, lineHeight: 1, marginTop: 8 }}>{m.n}</div>
+                              <div style={{ fontSize: 11, color: C.dim, marginTop: 5 }}>{m.h}</div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    ); })}
+                      <div style={{ padding: 18, background: C.panel, color: "#fff", display: "flex", flexDirection: "column", gap: 10 }}>
+                        <div style={{ fontSize: 12, fontWeight: 800, textTransform: "uppercase", color: "#93a1b2" }}>Attention queue</div>
+                        {queue.length === 0 ? (
+                          <div style={{ padding: 14, borderRadius: 8, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", fontSize: 14 }}>No urgent actions. Use Lesson Starter to keep momentum.</div>
+                        ) : queue.map(item => (
+                          <div key={item.key} style={{ display: "grid", gridTemplateColumns: "8px minmax(0, 1fr) auto", gap: 10, alignItems: "center", padding: 12, borderRadius: 8, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}>
+                            <span style={{ width: 8, height: 34, borderRadius: 99, background: item.tone }} />
+                            <span style={{ minWidth: 0 }}>
+                              <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</span>
+                              <span style={{ display: "block", fontSize: 12, color: "#bdc8d4", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.detail}</span>
+                            </span>
+                            <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>{item.label}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </Card>
                 );
               })()}

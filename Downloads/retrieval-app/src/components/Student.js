@@ -419,61 +419,78 @@ export function Student({ user }) {
     } catch (e) { console.error(e); }
   };
 
-  const submit = async () => {
-    if (!ans.trim() || marking) return;
-    stopMicIfActive();
-    setMarking(true);
-    const activeQs = reviewMode
-      ? qs.filter(q => mistakeQIds.has(q.id))
-      : (studyMode && studyTopicId ? qs.filter(q => q.topic_id === studyTopicId) : qs);
-    const q = activeQs[qi];
-    // One authoritative call: the edge function marks AND records the response
-    // server-side, so the grade can't be forged client-side. It still returns a
-    // verdict for the UI and queues itself if the network is down.
-    const r = await sb.submitAnswer({ question: q.question_text, model_answer: q.model_answer, student_answer: ans, marks: q.marks, question_id: q.id, class_id: cls.id, student_id: user.id, skipFakeCheck: cls?.subjects?.marker_profile === "maths" });
+  const currentActiveQs = () => reviewMode
+    ? qs.filter(q => mistakeQIds.has(q.id))
+    : (studyMode && studyTopicId ? qs.filter(q => q.topic_id === studyTopicId) : qs);
+
+  // Shared post-mark bookkeeping for BOTH free-text (AI) and MCQ (deterministic)
+  // marking: SR scheduling, streak, session cooldown, weekly/session stats and the
+  // target milestones. `answerText` is what the student gave (typed, or the chosen
+  // option) so the struggles log is accurate for either path.
+  const applyVerdict = (q, answerText, r) => {
     setRes(r);
     const prev = sr[q.id] || {};
     const nxt = nextSR(r.correct, prev);
     setSr(s => ({ ...s, [q.id]: nxt }));
     if (r.correct) setCorrectStreak(s => s + 1); else setCorrectStreak(0);
-    // If wrong (and not a flagged low-effort attempt), put it on cooldown for the session
     if (!r.correct && !r.flagged) {
-      setCooldown(prev => { const n = new Map(prev); n.set(q.id, COOLDOWN_LENGTH); return n; });
+      setCooldown(prev2 => { const n = new Map(prev2); n.set(q.id, COOLDOWN_LENGTH); return n; });
     }
-
     const isFlagged = r.flagged;
     if (!isFlagged) {
       const newValid = weeklyValid + 1;
       setWeeklyValid(newValid);
-      // Track session
       const topicName = q.topics?.name || "Unknown";
-      setSessionStats(prev => ({
-        t: prev.t + 1,
-        c: prev.c + (r.correct ? 1 : 0),
-        topics: prev.topics.includes(topicName) ? prev.topics : [...prev.topics, topicName],
+      setSessionStats(prev2 => ({
+        t: prev2.t + 1,
+        c: prev2.c + (r.correct ? 1 : 0),
+        topics: prev2.topics.includes(topicName) ? prev2.topics : [...prev2.topics, topicName],
         struggles: !r.correct && !r.flagged
-          ? [...prev.struggles, { question: q.question_text, studentAnswer: ans, modelAnswer: q.model_answer, topic: topicName }]
-          : prev.struggles,
+          ? [...prev2.struggles, { question: q.question_text, studentAnswer: answerText, modelAnswer: q.model_answer, topic: topicName }]
+          : prev2.struggles,
       }));
-      // Star milestone
       const overTarget = newValid - WEEKLY_TARGET;
       if (overTarget > 0 && overTarget % STAR_INTERVAL === 0) {
         setStarPop(true);
         setTimeout(() => setStarPop(false), 2000);
       }
-      // Show summary when target first hit this session
       if (newValid === WEEKLY_TARGET && !sessionHitTarget) {
         setSessionHitTarget(true);
-        setTimeout(() => setShowSummary(true), 600); // brief delay so student sees the correct/wrong result
+        setTimeout(() => setShowSummary(true), 600);
       }
     }
-
-    // A queued (offline) answer has no row id yet, so flagging its mark is
-    // unavailable until it syncs; everything else counts optimistically.
     if (r.response_id) setLastResponseId(r.response_id);
     setStats(s => ({ t: s.t + 1, c: s.c + (r.correct ? 1 : 0) }));
     setSessionQCount(n => n + 1);
     setMarking(false);
+  };
+
+  const submit = async () => {
+    if (!ans.trim() || marking) return;
+    stopMicIfActive();
+    setMarking(true);
+    const q = currentActiveQs()[qi];
+    // One authoritative call: the edge function marks AND records the response
+    // server-side, so the grade can't be forged client-side. It still returns a
+    // verdict for the UI and queues itself if the network is down.
+    const r = await sb.submitAnswer({ question: q.question_text, model_answer: q.model_answer, student_answer: ans, marks: q.marks, question_id: q.id, class_id: cls.id, student_id: user.id, skipFakeCheck: cls?.subjects?.marker_profile === "maths" });
+    applyVerdict(q, ans, r);
+  };
+
+  // Multiple choice: the student taps an option. Marked deterministically by index
+  // (no AI), recorded directly, then the same bookkeeping as a typed answer runs.
+  const submitMcq = async (idx) => {
+    if (marking || res) return;
+    setMarking(true);
+    const q = currentActiveQs()[qi];
+    const chosen = (q.options || [])[idx] ?? "";
+    setAns(chosen);
+    const correct = idx === q.correct_index;
+    const feedback = correct
+      ? "Correct!"
+      : `The correct answer is: ${(q.options || [])[q.correct_index] ?? q.model_answer}`;
+    const r = await sb.recordMcqResponse({ question_id: q.id, class_id: cls.id, student_id: user.id, student_answer: chosen, correct, marks: q.marks, feedback });
+    applyVerdict(q, chosen, r);
   };
 
   const next = () => {
@@ -633,7 +650,7 @@ export function Student({ user }) {
   }
 
   return (
-    <div style={{ padding: "12px 16px", maxWidth: 560, margin: "0 auto" }}>
+    <div style={{ padding: "16px 16px 60px", maxWidth: 620, margin: "0 auto" }}>
       {/* Star pop animation */}
       {SHOW_GAMIFICATION && starPop && (
         <div style={{ position: "fixed", top: 20, right: 20, zIndex: 999, animation: "starPop 2s ease forwards", fontSize: 48, pointerEvents: "none" }}>⭐</div>
@@ -648,8 +665,8 @@ export function Student({ user }) {
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
           {SHOW_GAMIFICATION && correctStreak >= 3 && <Badge color={C.amb}>{correctStreak} in a row</Badge>}
           {SHOW_GAMIFICATION && currentStars > 0 && <Badge color={C.amb}>★ {currentStars}</Badge>}
-          {sessionStats.t > 0 && <button onClick={() => setShowSummary(true)} style={{ background: "none", border: `1px solid ${C.bdr}`, borderRadius: 3, color: C.mid, fontSize: 11, cursor: "pointer", fontFamily: "inherit", padding: "4px 8px" }}>Session · {sessionStats.t}</button>}
-          <button onClick={() => { setStudyMode(p => !p); setStudyTopicId(null); setReviewMode(false); setRes(null); setAns(""); }} style={{ background: studyMode ? C.priSoftBg : "none", border: `1px solid ${studyMode ? C.pri : C.bdr}`, borderRadius: 3, color: studyMode ? C.pri : C.mid, fontSize: 11, cursor: "pointer", fontFamily: "inherit", padding: "4px 10px", fontWeight: studyMode ? 600 : 500 }}>Study</button>
+          {sessionStats.t > 0 && <button onClick={() => setShowSummary(true)} style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 999, color: C.mid, fontSize: 11, cursor: "pointer", fontFamily: "inherit", padding: "5px 10px", fontWeight: 700 }}>Session · {sessionStats.t}</button>}
+          <button onClick={() => { setStudyMode(p => !p); setStudyTopicId(null); setReviewMode(false); setRes(null); setAns(""); }} style={{ background: studyMode ? C.priSoftBg : C.card, border: `1px solid ${studyMode ? C.pri : C.bdr}`, borderRadius: 999, color: studyMode ? C.pri : C.mid, fontSize: 11, cursor: "pointer", fontFamily: "inherit", padding: "5px 11px", fontWeight: 700 }}>Study</button>
           {mistakeQIds.size > 0 && (
             <button onClick={() => {
                 const turningOn = !reviewMode;
@@ -660,7 +677,7 @@ export function Student({ user }) {
                 else setSessionTarget(Math.max(5, Math.min(15, Math.max(0, WEEKLY_TARGET - weeklyValid) || 10)));
                 setSessionStarted(false); setSessionQCount(0);
               }}
-              style={{ background: reviewMode ? C.redSoft : "none", border: `1px solid ${reviewMode ? C.red : C.bdr}`, borderRadius: 3, color: reviewMode ? C.red : C.mid, fontSize: 11, cursor: "pointer", fontFamily: "inherit", padding: "4px 10px", fontWeight: reviewMode ? 600 : 500 }}>
+              style={{ background: reviewMode ? C.redSoft : C.card, border: `1px solid ${reviewMode ? C.red : C.bdr}`, borderRadius: 999, color: reviewMode ? C.red : C.mid, fontSize: 11, cursor: "pointer", fontFamily: "inherit", padding: "5px 11px", fontWeight: 700 }}>
               Review ({mistakeQIds.size})
             </button>
           )}
@@ -668,12 +685,29 @@ export function Student({ user }) {
         </div>
       </div>
 
-      {/* Editorial standfirst */}
-      <div style={{ marginBottom: 20, paddingBottom: 16, borderBottom: `1px solid ${C.bdr}` }}>
-        <Kicker>Today's session</Kicker>
-        <Headline size={22} style={{ marginBottom: 6 }}>Welcome back.</Headline>
-        <Deck>{weeklyValid >= WEEKLY_TARGET ? "You've hit this week's target. Anything more is gravy." : `${WEEKLY_TARGET - weeklyValid} question${WEEKLY_TARGET - weeklyValid === 1 ? "" : "s"} to reach this week's target of ${WEEKLY_TARGET}.`}</Deck>
-      </div>
+      {/* Today's progress — one calm starting point before the question surface */}
+      <Card style={{ padding: 18, marginBottom: 16, background: C.panel, color: "#fff", borderColor: C.panel }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 12, color: "#93a1b2", fontWeight: 800, textTransform: "uppercase", marginBottom: 8 }}>Today</div>
+            <Headline size={26} style={{ color: "#fff", marginBottom: 6 }}>
+              {weeklyValid >= WEEKLY_TARGET ? "Target hit. Keep the streak warm." : `${WEEKLY_TARGET - weeklyValid} to go this week.`}
+            </Headline>
+            <Deck style={{ color: "#cbd5e1", maxWidth: 420 }}>
+              {reviewMode ? "Review the questions that tripped you up most recently." : studyMode ? "Pick a topic and practise it deliberately." : "Answer in your own words, get marked straight away, then move on."}
+            </Deck>
+          </div>
+          <Badge color={weeklyValid >= WEEKLY_TARGET ? C.grn : C.pri} style={{ background: "rgba(255,255,255,0.12)", color: "#fff" }}>{weeklyValid}/{WEEKLY_TARGET}</Badge>
+        </div>
+        <div style={{ height: 8, background: "rgba(255,255,255,0.16)", borderRadius: 999, overflow: "hidden" }}>
+          <div style={{ width: `${weekPct}%`, height: "100%", background: weeklyValid >= WEEKLY_TARGET ? "#78d5bb" : "#f7b1aa", borderRadius: 999, transition: "width .4s ease" }} />
+        </div>
+        {!sessionStarted && activeQs.length > 0 && (!studyMode || studyTopicId) && (
+          <Btn onClick={() => setSessionStarted(true)} style={{ marginTop: 14, width: "100%", background: "#fff", color: C.panel, borderColor: "#fff" }}>
+            {reviewMode ? "Start review" : "Start practice"}
+          </Btn>
+        )}
+      </Card>
 
       {/* ── Your weak spots → revise them ──────────────────────────────────
            The pupil's own lowest topics, each linked to the matching
@@ -1185,19 +1219,19 @@ export function Student({ user }) {
           )}
         </Card>
       ) : (
-        <Card style={{ overflow: "hidden" }}>
+        <Card style={{ overflow: "hidden", borderColor: "#cdd6df", boxShadow: "0 18px 55px rgba(20,23,26,0.08)" }}>
           {(() => {
             const srData = sr[q?.id];
             const srInfo = getSRInfo(srData, isDue);
             const sessionPct = Math.min(100, Math.round((sessionQCount / sessionTarget) * 100));
             return (
               <>
-                <div style={{ padding: "10px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#fbfcfd" }}>
                   <Badge color={C.acc}>{q?.topics?.name}</Badge>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end" }}>
-                        <span style={{ fontSize: 11, fontWeight: 700, color: srInfo.color, padding: "2px 8px", borderRadius: 99, background: `${srInfo.color}18` }}>{srInfo.label}</span>
+                        <span style={{ fontSize: 11, fontWeight: 800, color: srInfo.color, padding: "4px 9px", borderRadius: 99, background: `${srInfo.color}18` }}>{srInfo.label}</span>
                       </div>
                       <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>{srInfo.detail}</div>
                     </div>
@@ -1205,28 +1239,41 @@ export function Student({ user }) {
                   </div>
                 </div>
                 {/* Session progress */}
-                <div style={{ padding: "0 16px 10px", borderBottom: `1px solid ${C.bdr}` }}>
+                <div style={{ padding: "0 16px 12px", borderBottom: `1px solid ${C.bdr}`, background: "#fbfcfd" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                     <span style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: 0.4 }}>
                       Session · Q{Math.min(sessionQCount + 1, sessionTarget)} of {sessionTarget}
                     </span>
                     <span style={{ fontSize: 10, color: C.dim }}>{sessionPct}%</span>
                   </div>
-                  <div style={{ width: "100%", height: 4, background: C.bdr, borderRadius: 99, overflow: "hidden" }}>
+                  <div style={{ width: "100%", height: 7, background: C.bdrSoft, borderRadius: 99, overflow: "hidden" }}>
                     <div style={{ width: `${sessionPct}%`, height: "100%", background: sessionPct >= 100 ? C.grn : C.pri, borderRadius: 99, transition: "width .3s ease" }} />
                   </div>
                 </div>
               </>
             );
           })()}
-          <div style={{ padding: "20px 16px" }}>
+          <div style={{ padding: "22px 18px" }}>
             {q?.image_url && (
               <div style={{ marginBottom: 14, borderRadius: 8, overflow: "hidden", border: `1px solid ${C.bdr}`, background: "#fff" }}>
                 <img src={q.image_url} alt="question diagram" style={{ width: "100%", maxHeight: 360, objectFit: "contain", display: "block" }} />
               </div>
             )}
-            <div style={{ fontSize: 16, color: C.txt, lineHeight: 1.55, marginBottom: 20, fontWeight: 500 }}>{q?.question_text}</div>
+            <div style={{ fontSize: 20, color: C.txt, lineHeight: 1.45, marginBottom: 20, fontWeight: 700 }}>{q?.question_text}</div>
             {!res ? (
+              (q?.kind === "mcq" && Array.isArray(q?.options) && q.options.length > 0) ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {q.options.map((opt, i) => (
+                    <button key={i} type="button" disabled={marking} onClick={() => submitMcq(i)}
+                      style={{ textAlign: "left", padding: "14px 16px", borderRadius: 8, border: `1px solid ${C.bdr}`, background: C.card, color: C.txt, fontSize: 15, fontFamily: "inherit", cursor: marking ? "default" : "pointer", lineHeight: 1.45, display: "flex", gap: 10 }}
+                      onMouseEnter={e => { if (!marking) { e.currentTarget.style.borderColor = C.pri; e.currentTarget.style.background = C.priSoft; } }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = C.bdr; e.currentTarget.style.background = C.card; }}>
+                      <span style={{ color: C.dim, fontWeight: 700 }}>{String.fromCharCode(65 + i)}</span>
+                      <span>{opt}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
               <>
                 {isMaths ? (
                   // Maths: working-friendly input. Enter makes a new line, a symbol
@@ -1236,7 +1283,7 @@ export function Student({ user }) {
                 ) : (
                   <>
                     <div style={{ position: "relative" }}>
-                      <TA value={ans} onChange={e => setAns(e.target.value)} placeholder={isRecording ? "Listening… speak naturally" : "Type your answer… or tap the mic"} rows={3} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} style={{ paddingRight: speechSupported ? 52 : undefined }} />
+                      <TA value={ans} onChange={e => setAns(e.target.value)} placeholder={isRecording ? "Listening… speak naturally" : "Type your answer… or tap the mic"} rows={4} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} style={{ paddingRight: speechSupported ? 52 : undefined, background: "#fbfcfd", lineHeight: 1.55 }} />
                       {speechSupported && (
                         <button type="button" onClick={toggleMic} aria-label={isRecording ? "Stop recording" : "Start voice input"}
                           style={{ position: "absolute", right: 10, bottom: 10, width: 36, height: 36, borderRadius: 99, border: `1px solid ${isRecording ? C.red : C.bdr}`, background: isRecording ? C.red : C.card, color: isRecording ? "#fff" : C.mid, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, padding: 0, boxShadow: isRecording ? `0 0 0 4px ${C.redS}` : "none", transition: "all .15s ease" }}>
@@ -1252,21 +1299,22 @@ export function Student({ user }) {
                 )}
                 <Btn onClick={submit} disabled={!ans.trim() || marking} style={{ width: "100%", marginTop: 12, padding: "14px 20px" }}>{marking ? "Marking..." : "Submit"}</Btn>
               </>
+              )
             ) : (
               <div style={{ animation: "slideUp .25s ease" }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", borderRadius: 12, background: res.correct ? C.grnS : C.redS, border: `1px solid ${res.correct ? "rgba(34,197,94,.2)" : "rgba(239,68,68,.2)"}`, marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", borderRadius: 8, background: res.correct ? C.grnS : C.redS, border: `1px solid ${res.correct ? "rgba(22,131,94,.25)" : "rgba(201,59,50,.25)"}`, marginBottom: 14 }}>
                   <span style={{ fontSize: 22, lineHeight: 1 }}>{res.correct ? "✓" : "✗"}</span>
                   <div>
-                    <div style={{ color: res.correct ? C.grn : C.red, fontWeight: 700, fontSize: 15 }}>{res.correct ? "Correct!" : "Not quite"} <span style={{ fontWeight: 400, opacity: .7 }}>({res.marks_awarded}/{q.marks})</span></div>
+                    <div style={{ color: res.correct ? C.grn : C.red, fontWeight: 800, fontSize: 15 }}>{res.correct ? "Good answer" : "Not quite yet"} <span style={{ fontWeight: 500, opacity: .75 }}>({res.marks_awarded}/{q.marks})</span></div>
                     <div style={{ color: C.mid, fontSize: 13, marginTop: 3, lineHeight: 1.4 }}>{res.feedback}</div>
                   </div>
                 </div>
-                <div style={{ padding: "10px 14px", background: `${C.bdr}44`, borderRadius: 10, marginBottom: 8, fontSize: 13 }}>
-                  <span style={{ color: C.dim, fontSize: 10, textTransform: "uppercase", letterSpacing: .4 }}>You wrote</span>
+                <div style={{ padding: "11px 14px", background: C.card2, borderRadius: 8, marginBottom: 8, fontSize: 13, border: `1px solid ${C.bdrSoft}` }}>
+                  <span style={{ color: C.dim, fontSize: 11, fontWeight: 800 }}>You wrote</span>
                   <div style={{ color: C.mid, marginTop: 3 }}>{ans}</div>
                 </div>
-                <div style={{ padding: "10px 14px", background: C.priSoft, borderRadius: 10, marginBottom: 16, fontSize: 13 }}>
-                  <span style={{ color: C.dim, fontSize: 10, textTransform: "uppercase", letterSpacing: .4 }}>Model answer</span>
+                <div style={{ padding: "11px 14px", background: C.priSoft, borderRadius: 8, marginBottom: 16, fontSize: 13, border: `1px solid ${C.pri}22` }}>
+                  <span style={{ color: C.dim, fontSize: 11, fontWeight: 800 }}>Model answer</span>
                   <div style={{ color: C.txt, marginTop: 3 }}>{q.model_answer}</div>
                 </div>
                 <Btn onClick={next} style={{ width: "100%", padding: "14px 20px" }}>Next question →</Btn>

@@ -30,7 +30,7 @@ export const viewport = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className={`${plex.variable} ${serif.variable}`}>
-      <body style={{ margin: 0, padding: 0, fontFamily: "var(--font-plex), -apple-system, sans-serif", background: "#faf7f0", color: "#1c1a14" }}>{children}</body>
+      <body style={{ margin: 0, padding: 0, fontFamily: "var(--font-plex), -apple-system, sans-serif", background: "#f4f6f8", color: "#14171a" }}>{children}</body>
     </html>
   );
 }

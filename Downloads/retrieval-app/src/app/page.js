@@ -80,16 +80,17 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100dvh", background: C.bg, fontFamily: "var(--font-plex), -apple-system, sans-serif", color: C.txt }}>
-      <div style={{ borderBottom: `1px solid ${C.bdr}`, background: C.card, padding: "0 16px", position: "sticky", top: 0, zIndex: 50 }}>
-        <div style={{ maxWidth: 700, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", height: 50 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 16, fontWeight: 800, letterSpacing: -.3 }}>Feynman<span style={{ color: C.pri }}> Education</span></span>
+      <div style={{ borderBottom: `1px solid ${C.bdr}`, background: C.panel, color: "#fff", padding: "0 18px", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 1px 0 rgba(20,23,26,0.08)" }}>
+        <div style={{ maxWidth: teacherSide ? 1180 : 700, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 58, gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <span style={{ width: 32, height: 32, borderRadius: 8, background: "#fff", color: C.pri, display: "grid", placeItems: "center", fontFamily: C.serif, fontSize: 19, fontWeight: 800, flexShrink: 0 }}>F</span>
+            <span style={{ fontSize: 16, fontWeight: 800, whiteSpace: "nowrap" }}>Feynman<span style={{ color: "#f7b1aa" }}> Education</span></span>
             <Badge color={roleColor(user)}>{roleLabel(user)}</Badge>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Btn v="ghost" onClick={() => setShowSupport(true)} style={{ padding: "6px 12px", fontSize: 12 }}>Help</Btn>
-            <Btn v="ghost" onClick={() => setShowAccount(true)} style={{ padding: "6px 12px", fontSize: 12 }}>Account</Btn>
-            <Btn v="ghost" onClick={() => { sb.auth.out(); setUser(null); }} style={{ padding: "6px 12px", fontSize: 12 }}>Log out</Btn>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <Btn v="ghost" onClick={() => setShowSupport(true)} style={{ padding: "7px 12px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}>Help</Btn>
+            <Btn v="ghost" onClick={() => setShowAccount(true)} style={{ padding: "7px 12px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}>Account</Btn>
+            <Btn v="ghost" onClick={() => { sb.auth.out(); setUser(null); }} style={{ padding: "7px 12px", minHeight: 34, fontSize: 12, background: "transparent", color: "#93a1b2", border: "1px solid rgba(255,255,255,0.12)" }}>Log out</Btn>
           </div>
         </div>
       </div>
