@@ -5,7 +5,7 @@
 // key/billing). Returns 200 when marking is healthy, 503 otherwise — point a
 // monitor at GET /api/health and alert on 503.
 export const dynamic = "force-dynamic";
-export const runtime = "edge";
+export const runtime = "nodejs";
 
 // Public Supabase ref + anon key (already shipped in the browser bundle; RLS protects data).
 const SUPA = "https://uvzukwoxqhcxaxtzrziy.supabase.co";
