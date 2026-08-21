@@ -7,6 +7,8 @@
 // the auth / metering / cost-backstop logic instead of duplicating it (the kind of
 // edge-function copy-paste the ecosystem review flagged).
 
+import { createHash } from "node:crypto";
+
 export const SUPA_URL = process.env.NEXT_PUBLIC_SUPA_URL || "https://uvzukwoxqhcxaxtzrziy.supabase.co";
 export const ANON_KEY = process.env.NEXT_PUBLIC_SUPA_KEY;
 export const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -51,14 +53,24 @@ export async function getAuthedUid(req) {
   } catch { return null; }
 }
 
-// Fire-and-forget AI usage logging, same row shape as mark-paper-answer so spend
-// shows in the cost dashboard and counts toward the school backstop.
-export function logUsage(label, school_id, usage) {
-  if (!usage) return;
-  rest("ai_usage", { method: "POST", body: {
+// Structured AI usage logging shared by the Node routes. Callers may await it
+// when the record must be durable before the response is returned.
+export function logUsage(label, school_id, usage, {
+  provider = "anthropic", model = null, request_id = null, response_id = null,
+  operation = label, latency_ms = 0, success = true, source = "ai",
+} = {}) {
+  usage = usage || {};
+  return rest("ai_usage", { method: "POST", body: {
     call_label: label,
-    source: "ai",
+    source,
     school_id,
+    provider,
+    model,
+    request_id,
+    response_id,
+    operation,
+    latency_ms: Math.max(0, Math.round(Number(latency_ms) || 0)),
+    success: !!success,
     input_tokens: Number(usage.input_tokens) || 0,
     output_tokens: Number(usage.output_tokens) || 0,
     cache_creation_tokens: Number(usage.cache_creation_input_tokens) || 0,
@@ -81,16 +93,56 @@ export async function overBackstop(school_id) {
 export async function anthropicMessages({ model, max_tokens, system, messages }) {
   const body = { model, max_tokens, messages };
   if (system) body.system = system;
+  const started = performance.now();
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
     body: JSON.stringify(body),
   });
-  return r.json();
+  const data = await r.json();
+  return { ...data, _telemetry: { latency_ms: performance.now() - started, success: r.ok, status: r.status } };
 }
 
 // Pull the first text block out of an Anthropic response and strip code fences.
 export function responseText(data) {
   const text = data?.content?.[0]?.text || "";
   return text.replace(/```json|```/g, "").trim();
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]));
+  }
+  return value;
+}
+
+export function requestHash(value) {
+  return createHash("sha256").update(JSON.stringify(stableValue(value))).digest("hex");
+}
+
+export function contentHash(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+export async function getCachedOperation(operation, request_hash, maxAgeSeconds = null) {
+  const params = {
+    operation: `eq.${operation}`,
+    request_hash: `eq.${request_hash}`,
+    select: "result,model,created_at",
+    limit: "1",
+  };
+  if (maxAgeSeconds) params.created_at = `gte.${new Date(Date.now() - maxAgeSeconds * 1000).toISOString()}`;
+  try {
+    const rows = await rest("ai_operation_cache", { params });
+    return rows?.[0] || null;
+  } catch { return null; }
+}
+
+export async function putCachedOperation({ operation, request_hash, actor_id, school_id, provider = "anthropic", model, result }) {
+  try {
+    await rest("ai_operation_cache", { method: "POST", body: {
+      operation, request_hash, actor_id, school_id, provider, model, result,
+    } });
+  } catch { /* a concurrent identical request may have inserted first */ }
 }

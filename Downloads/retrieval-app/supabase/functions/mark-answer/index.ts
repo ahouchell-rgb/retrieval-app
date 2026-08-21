@@ -2,6 +2,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { BASE_RETRIEVAL } from "../_shared/marking/base-retrieval.ts";
 import { overlayFor } from "../_shared/marking/registry.ts";
+import { checkNumericalMatch } from "../_shared/marking/numeric.ts";
+import {
+  AI_PROVIDER, claimRequest, decodeRetrievalVerdict, finishRequest,
+  logShortcut, logUsage, validRequestId, type UsageEvent,
+} from "../_shared/ai.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const MODEL = "claude-haiku-4-5-20251001";
@@ -30,25 +35,6 @@ const MAX_HITS_BEFORE_REVERIFY = 50;    // after this many cache hits, the next 
 const MAX_AGE_DAYS_BEFORE_REVERIFY = 90; // entries older than this re-verify next call
 const MIN_ANSWER_WORDS = 3;             // never cache anything shorter than this in absolute terms
 const MIN_LENGTH_RATIO = 0.6;           // OR at least 60% of model answer length
-
-function extractNumbers(text: string): number[] {
-  // Keep the sign: "-5" must stay -5, not 5. (A leading minus is only captured
-  // when it is NOT preceded by a word char or "." — so a true negative sign is
-  // kept, while a hyphen mid-word is not.)
-  const matches = text.match(/(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])/g);
-  return matches ? matches.map(Number) : [];
-}
-
-function checkNumericalMatch(modelAnswer: string, studentAnswer: string): boolean {
-  const modelNums = extractNumbers(modelAnswer);
-  if (modelNums.length !== 1) return false;
-  const target = modelNums[0];
-  // Compare by VALUE, so "-5" only matches "-5" (never "5"), and "5" never
-  // matches "-5". Previously both sides had their sign stripped, which silently
-  // auto-marked a positive answer correct for a negative model answer (and vice
-  // versa) — wrong for directed numbers, coordinates, temperatures, etc.
-  return extractNumbers(studentAnswer).some(n => n === target);
-}
 
 // Normalise an answer for cache lookup. Conservative: lowercase, strip
 // punctuation (but keep hyphens for compound terms), drop leading articles,
@@ -144,37 +130,17 @@ async function overBackstop(school_id: string | null): Promise<boolean> {
   }
 }
 
-// Fire-and-forget AI usage logging. `source` tags the row so the admin cost dashboard
-// can break spend down (ai / ai_double_check); `school_id` attributes it to a school.
-function logUsage(label: string, source: string, school_id: string | null, usage: Record<string, unknown> | undefined) {
-  if (!sb || !usage) return;
-  const row = {
-    call_label: label,
-    source,
-    school_id,
-    input_tokens: Number(usage.input_tokens) || 0,
-    output_tokens: Number(usage.output_tokens) || 0,
-    cache_creation_tokens: Number(usage.cache_creation_input_tokens) || 0,
-    cache_read_tokens: Number(usage.cache_read_input_tokens) || 0,
-  };
-  sb.from("ai_usage").insert(row).then(() => {}).catch((e) => console.error("ai_usage insert failed:", e));
-}
-
-// Fire-and-forget logging of a NO-AI marking (numerical_match / exact_match / cache /
-// client_flagged). Writes a zero-token row so the cost dashboard sees the full
-// free-vs-AI blend — every marking is exactly one entry-point row ('first' for an AI
-// mark, 'shortcut' for these). This is the data behind the dashboard's per-marking cost.
-function logShortcut(source: string, school_id: string | null) {
-  if (!sb) return;
-  sb.from("ai_usage").insert({
-    call_label: "shortcut",
-    source,
-    school_id,
-    input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0,
-  }).then(() => {}).catch(() => {});
-}
-
-async function callAiMark(label: string, source: string, school_id: string | null, overlay: string, question: string, model_answer: string, student_answer: string, marks: number) {
+async function callAiMark(
+  label: string,
+  source: string,
+  overlay: string,
+  question: string,
+  model_answer: string,
+  student_answer: string,
+  marks: number,
+  context: { school_id: string | null; request_id: string },
+) {
+  const started = performance.now();
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -184,7 +150,7 @@ async function callAiMark(label: string, source: string, school_id: string | nul
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 300,
+      max_tokens: 180,
       system: [
         // Two cached system blocks: the subject-agnostic engine (shared across every
         // subject) then the per-subject overlay. base + overlay are the same size as the
@@ -215,10 +181,24 @@ async function callAiMark(label: string, source: string, school_id: string | nul
     }),
   });
   const data = await response.json();
-  logUsage(label, source, school_id, data?.usage);
+  const event: UsageEvent = {
+    call_label: label, source, operation: "mark_retrieval",
+    provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
+    latency_ms: performance.now() - started, success: response.ok,
+  };
+  if (!response.ok) {
+    await logUsage(sb, event, context);
+    throw new Error(`Anthropic ${response.status}: ${String(data?.error?.message || "request failed").slice(0, 180)}`);
+  }
   const text = data.content?.[0]?.text || "";
   const clean = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(clean);
+  try {
+    return { verdict: decodeRetrievalVerdict(JSON.parse(clean)), event };
+  } catch (error) {
+    event.success = false;
+    await logUsage(sb, event, context);
+    throw error;
+  }
 }
 
 // Look for an authoritative cache entry. Returns the entry only if it is
@@ -335,6 +315,8 @@ async function recordResponse(
   class_id: string | undefined,
   student_answer: string,
   verdict: { correct: boolean; marks_awarded: number; feedback: string; flagged: boolean; confidence?: string },
+  request_id: string,
+  marking_source: string,
 ): Promise<string | null> {
   if (!sb || !uid || !question_id || !class_id) return null;
   try {
@@ -356,6 +338,8 @@ async function recordResponse(
         marks_awarded: verdict.marks_awarded,
         ai_feedback: verdict.flagged ? "FLAGGED: " + verdict.feedback : verdict.feedback,
         ai_confidence: verdict.confidence ?? null,
+        request_id,
+        marking_source,
       })
       .select("id")
       .single();
@@ -367,6 +351,30 @@ async function recordResponse(
   }
 }
 
+async function storedVerdict(uid: string, request_id: string, response_id?: string | null) {
+  if (!sb) return null;
+  let query = sb.from("responses")
+    .select("id,is_correct,marks_awarded,ai_feedback,ai_confidence,marking_source")
+    .eq("student_id", uid);
+  query = response_id ? query.eq("id", response_id) : query.eq("request_id", request_id);
+  const { data, error } = await query.limit(1);
+  if (error || !data?.length) return null;
+  const row = data[0];
+  const rawFeedback = String(row.ai_feedback || "");
+  const flagged = rawFeedback.startsWith("FLAGGED: ");
+  return {
+    correct: !!row.is_correct,
+    marks_awarded: Number(row.marks_awarded) || 0,
+    feedback: flagged ? rawFeedback.slice(9) : rawFeedback,
+    flagged,
+    confidence: row.ai_confidence || "high",
+    source: row.marking_source || "idempotent_replay",
+    recorded: true,
+    response_id: row.id,
+    replayed: true,
+  };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -375,26 +383,80 @@ Deno.serve(async (req: Request) => {
   const json = (obj: unknown, status = 200) =>
     new Response(JSON.stringify(obj), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+  let activeRequestId: string | null = null;
   try {
-    const { question, model_answer, student_answer, marks, question_id, class_id, prejudged_flagged } = await req.json();
+    if (!sb) return json({ error: "Server not configured." }, 500);
+    const body = await req.json();
+    const question_id = String(body?.question_id || "");
+    const class_id = String(body?.class_id || "");
+    if (!question_id || !class_id) return json({ error: "question_id and class_id are required" }, 400);
 
-    if (!question || !model_answer || !student_answer) {
-      return json({ error: "Missing fields" }, 400);
+    // The authenticated endpoint is the paid, authoritative marking path. Public
+    // practice has its own constrained mark-preview route.
+    const uid = await getAuthedUid(req);
+    if (!uid) return json({ error: "Sign in to submit an answer." }, 401);
+
+    const [membership, questionRow] = await Promise.all([
+      sb.from("class_members").select("student_id").eq("class_id", class_id).eq("student_id", uid).limit(1),
+      sb.from("questions").select("question_text,model_answer,marks,kind,options,correct_index,archived").eq("id", question_id).single(),
+    ]);
+    if (membership.error || !membership.data?.length) return json({ error: "Not enrolled in this class." }, 403);
+    if (questionRow.error || !questionRow.data || questionRow.data.archived) return json({ error: "Question not available." }, 404);
+
+    // Question text, model answer and marks are DB-authoritative. Besides grade
+    // integrity, this bounds prompt size so a pupil cannot inflate provider cost.
+    const question = String(questionRow.data.question_text || "");
+    const model_answer = String(questionRow.data.model_answer || "");
+    const maxMarks = Math.max(1, Number(questionRow.data.marks) || 1);
+    const isMcq = questionRow.data.kind === "mcq";
+    const selectedIndex = Number(body?.selected_index);
+    const options = Array.isArray(questionRow.data.options) ? questionRow.data.options.map(String) : [];
+    let student_answer = String(body?.student_answer || "").trim().slice(0, 2000);
+    if (isMcq) {
+      if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= options.length) {
+        return json({ error: "Choose a valid answer option." }, 400);
+      }
+      student_answer = options[selectedIndex];
+    } else if (!student_answer) {
+      return json({ error: "student_answer is required" }, 400);
     }
 
-    const maxMarks = Number(marks) || 1;
+    const operation = isMcq ? "mark_mcq" : "mark_retrieval";
+    const requestId = validRequestId(body?.request_id) || crypto.randomUUID();
+    activeRequestId = requestId;
+    const claim = await claimRequest(sb, requestId, uid, operation);
+    if (!claim.claimed) {
+      if (claim.status === "completed") {
+        const prior = await storedVerdict(uid, requestId, claim.response_id);
+        if (prior) return json({ ...prior, request_id: requestId });
+      }
+      if (claim.status === "conflict") return json({ error: "request_id was already used for another operation" }, 409);
+      return json({ error: "This answer is already being marked. Retry shortly.", request_id: requestId }, 409);
+    }
+
     const schoolId = await resolveSchoolId(class_id);
+    const usageEvents: UsageEvent[] = [];
 
     // ── Build the verdict (this is the only place the grade is decided) ──
     let verdict: { correct: boolean; marks_awarded: number; feedback: string; flagged: boolean; source: string; confidence?: string };
 
-    if (prejudged_flagged) {
+    if (isMcq) {
+      const correct = selectedIndex === Number(questionRow.data.correct_index);
+      verdict = {
+        correct,
+        marks_awarded: correct ? maxMarks : 0,
+        feedback: correct ? "Correct." : `The correct answer is: ${options[Number(questionRow.data.correct_index)] ?? model_answer}`,
+        flagged: false,
+        source: "mcq",
+        confidence: "high",
+      };
+    } else if (body?.prejudged_flagged) {
       // The client's cheap heuristic flagged this as a non-attempt. Trusting it
       // can only award 0 / mark incorrect, so a cheating client gains nothing —
       // and it saves an AI call on obvious junk.
       verdict = {
         correct: false, marks_awarded: 0,
-        feedback: typeof prejudged_flagged === "string" ? prejudged_flagged : "Flagged as a non-attempt.",
+        feedback: typeof body.prejudged_flagged === "string" ? body.prejudged_flagged : "Flagged as a non-attempt.",
         flagged: true, source: "client_flagged",
       };
     } else if (checkNumericalMatch(model_answer, student_answer)) {
@@ -434,10 +496,12 @@ Deno.serve(async (req: Request) => {
         const markerProfile = await resolveMarkerProfile(question_id, class_id);
         const overlay = overlayFor(markerProfile, "retrieval");
 
-        const first = await callAiMark("first", "ai", schoolId, overlay, question, model_answer, student_answer, maxMarks);
+        const firstCall = await callAiMark("first", "ai", overlay, question, model_answer, student_answer, maxMarks, { school_id: schoolId, request_id: requestId });
+        usageEvents.push(firstCall.event);
+        const first = firstCall.verdict;
         if (first.correct || first.flagged) {
           tryWriteCache(first).catch(() => {});
-          verdict = { correct: !!first.correct, marks_awarded: first.marks_awarded ?? (first.correct ? maxMarks : 0), feedback: first.feedback || "", flagged: !!first.flagged, source: "ai", confidence: first.confidence };
+          verdict = { correct: !!first.correct, marks_awarded: first.marks_awarded ?? (first.correct ? maxMarks : 0), feedback: first.feedback || (first.correct ? "Correct." : ""), flagged: !!first.flagged, source: "ai", confidence: first.confidence };
         } else {
           // Double-check wrong answers — the model is sometimes harsh on first pass.
           // COST LEVER 3: skip the re-check when the first pass is already high
@@ -450,14 +514,16 @@ Deno.serve(async (req: Request) => {
           let overturned: { correct?: boolean; marks_awarded?: number; feedback?: string } | null = null;
           if (first.confidence !== "high") {
             try {
-              const second = await callAiMark("second", "ai_double_check", schoolId, overlay, question, model_answer, student_answer, maxMarks);
+              const secondCall = await callAiMark("second", "ai_double_check", overlay, question, model_answer, student_answer, maxMarks, { school_id: schoolId, request_id: requestId });
+              usageEvents.push(secondCall.event);
+              const second = secondCall.verdict;
               if (second.correct) { tryWriteCache(second).catch(() => {}); overturned = second; }
             } catch (_) {
               // fall through to the confirmed-wrong verdict
             }
           }
           verdict = overturned
-            ? { correct: true, marks_awarded: overturned.marks_awarded ?? maxMarks, feedback: overturned.feedback || "", flagged: false, source: "ai_double_check_overturned", confidence: "medium" }
+            ? { correct: true, marks_awarded: overturned.marks_awarded ?? maxMarks, feedback: overturned.feedback || "Correct.", flagged: false, source: "ai_double_check_overturned", confidence: "medium" }
             : { correct: !!first.correct, marks_awarded: first.marks_awarded ?? 0, feedback: first.feedback || "", flagged: !!first.flagged, source: "ai_double_check_confirmed", confidence: first.confidence };
         }
       }
@@ -472,21 +538,24 @@ Deno.serve(async (req: Request) => {
     // off low/medium, so these correctly never appear in it.
     if (!verdict.confidence) verdict.confidence = "high";
 
-    // Log the no-AI markings for the cost dashboard. AI markings already logged their
-    // tokens (logUsage 'first'); here we record one zero-token 'shortcut' row per
-    // deterministic mark so the dashboard sees the full blend and the true cost-per-mark.
-    if (verdict.source === "numerical_match" || verdict.source === "exact_match" ||
-        verdict.source === "cache" || verdict.source === "client_flagged") {
-      logShortcut(verdict.source, schoolId);
+    // ── Record server-side (authenticated pupil, their own class only) ──
+    // Never persist a backstop "verdict" as a grade — it isn't one.
+    const response_id = verdict.source === "cap_backstop" ? null
+      : await recordResponse(uid, question_id, class_id, student_answer, verdict, requestId, verdict.source);
+
+    const isShortcut = ["numerical_match", "exact_match", "cache", "client_flagged", "mcq"].includes(verdict.source);
+    if (isShortcut) {
+      await logShortcut(sb, verdict.source, operation, { school_id: schoolId, request_id: requestId, response_id });
+    } else {
+      await Promise.all(usageEvents.map((event) => logUsage(sb, event, { school_id: schoolId, request_id: requestId, response_id })));
     }
 
-    // ── Record server-side (authenticated pupil, their own class only) ──
-    const uid = await getAuthedUid(req);
-    // Never persist a backstop "verdict" as a grade — it isn't one.
-    const response_id = verdict.source === "cap_backstop" ? null : await recordResponse(uid, question_id, class_id, student_answer, verdict);
-
-    return json({ ...verdict, recorded: response_id !== null, response_id });
+    if (response_id) await finishRequest(sb, requestId, "completed", response_id);
+    else await finishRequest(sb, requestId, "failed");
+    activeRequestId = null;
+    return json({ ...verdict, recorded: response_id !== null, response_id, request_id: requestId });
   } catch (error) {
+    if (sb && activeRequestId) await finishRequest(sb, activeRequestId, "failed");
     return json({
       correct: false, marks_awarded: 0, feedback: "Marking error — try again.",
       flagged: false, source: "error", recorded: false, response_id: null, error: String(error),

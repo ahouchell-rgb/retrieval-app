@@ -59,11 +59,11 @@ describe("paginate", () => {
 });
 
 describe("recordMcqResponse", () => {
-  it("records a correct MCQ directly without calling the AI marker", async () => {
+  it("records a correct MCQ through the authoritative marker without an AI verdict", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      status: 201,
-      json: async () => [{ id: "response-123" }],
+      status: 200,
+      json: async () => ({ correct: true, marks_awarded: 2, feedback: "Correct.", flagged: false, source: "mcq", recorded: true, response_id: "response-123" }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -72,15 +72,16 @@ describe("recordMcqResponse", () => {
       class_id: "class-1",
       student_id: "student-1",
       student_answer: "Mitochondria",
+      selected_index: 1,
       correct: true,
       marks: 2,
-      feedback: "Correct!",
+      feedback: "Correct.",
     });
 
     expect(result).toEqual({
       correct: true,
       marks_awarded: 2,
-      feedback: "Correct!",
+      feedback: "Correct.",
       flagged: false,
       source: "mcq",
       recorded: true,
@@ -88,13 +89,12 @@ describe("recordMcqResponse", () => {
     });
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, request] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain("/rest/v1/responses");
-    expect(String(url)).not.toContain("mark-answer");
+    expect(String(url)).toContain("/functions/v1/mark-answer");
     expect(JSON.parse(request.body)).toMatchObject({
       question_id: "question-1",
-      is_correct: true,
-      marks_awarded: 2,
+      selected_index: 1,
     });
+    expect(JSON.parse(request.body)).not.toHaveProperty("is_correct");
   });
 
   it("returns the deterministic verdict when the response cannot be stored", async () => {
@@ -105,6 +105,7 @@ describe("recordMcqResponse", () => {
       class_id: "class-1",
       student_id: "student-1",
       student_answer: "Nucleus",
+      selected_index: 0,
       correct: false,
       marks: 1,
       feedback: "The correct answer is: Ribosome",
@@ -115,7 +116,7 @@ describe("recordMcqResponse", () => {
       marks_awarded: 0,
       source: "mcq",
       recorded: false,
-      queued: false,
+      queued: true,
       response_id: null,
     });
   });

@@ -14,6 +14,7 @@
 // so re-opening the panel is free.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { AI_PROVIDER, logUsage, requestHash, type UsageEvent } from "../_shared/ai.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -104,8 +105,17 @@ Deno.serve(async (req: Request) => {
     `Wrong answers pupils gave: ${(q.sample_wrong || []).map((s: string) => `"${s}"`).join("; ")}`
   ).join("\n\n");
 
+  const hash = await requestHash({ operation: "class_misconceptions", version: 2, model: MODEL, class_id, topic_id, days, dataText });
+  const prior = await sb.from("class_misconception_runs")
+    .select("result,computed_at,model").eq("request_hash", hash).limit(1);
+  if (!prior.error && prior.data?.length) {
+    return json({ ...(prior.data[0].result || { misconceptions: [] }), computed_at: prior.data[0].computed_at, model: prior.data[0].model, cached: true });
+  }
+
   // ── Cluster with Claude ─────────────────────────────────────────────────────
   let data: any;
+  const requestId = crypto.randomUUID();
+  const started = performance.now();
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -117,29 +127,28 @@ Deno.serve(async (req: Request) => {
       body: JSON.stringify({
         model: MODEL,
         max_tokens: MAX_OUTPUT_TOKENS,
-        // 1-hour TTL: a teacher mining several classes in one sitting re-reads this
-        // stable instruction prefix; the per-class data trails it, uncached.
-        system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral", ttl: "1h" } }],
+        // Default 5-minute cache: identical inputs are now stored by hash, so paying
+        // the higher 1-hour cache-write premium no longer buys useful reuse.
+        system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
         messages: [{ role: "user", content: `Class wrong-answer data (last ${days} days):\n\n${dataText}\n\nReturn the JSON now.` }],
       }),
     });
     data = await res.json();
+    const event: UsageEvent = {
+      call_label: "misconceptions", source: "ai", operation: "class_misconceptions",
+      provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
+      latency_ms: performance.now() - started, success: res.ok,
+    };
+    await logUsage(sb, event, { school_id: schoolId, request_id: requestId });
     if (!res.ok) return json({ error: `Claude ${res.status}: ${String(data?.error?.message || "").slice(0, 200)}` }, 502);
   } catch (e) {
+    await logUsage(sb, {
+      call_label: "misconceptions", source: "ai", operation: "class_misconceptions",
+      provider: AI_PROVIDER, model: MODEL, latency_ms: performance.now() - started, success: false,
+    }, { school_id: schoolId, request_id: requestId });
     return json({ error: `Claude request failed: ${(e as Error).message}` }, 502);
   }
-
-  // ── Usage logging for the cost dashboard (fire-and-forget) ──────────────────
   const usage = data?.usage || {};
-  sb.from("ai_usage").insert({
-    call_label: "misconceptions",
-    source: "ai",
-    school_id: schoolId,
-    input_tokens: Number(usage.input_tokens) || 0,
-    output_tokens: Number(usage.output_tokens) || 0,
-    cache_creation_tokens: Number(usage.cache_creation_input_tokens) || 0,
-    cache_read_tokens: Number(usage.cache_read_input_tokens) || 0,
-  }).then(() => {}).catch((e) => console.error("ai_usage insert failed:", e));
 
   // ── Parse + sanitise (clamp lengths; drop hallucinated question ids) ────────
   const raw = (data?.content?.[0]?.text || "").replace(/```json|```/g, "").trim();
@@ -188,7 +197,8 @@ Deno.serve(async (req: Request) => {
     output_tokens: Number(usage.output_tokens) || 0,
     computed_by: user.id,
     computed_at,
+    request_hash: hash,
   }).then(() => {}).catch((e) => console.error("run cache insert failed:", e));
 
-  return json({ misconceptions, computed_at, model: MODEL });
+  return json({ misconceptions, computed_at, model: MODEL, cached: false });
 });

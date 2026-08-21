@@ -2,6 +2,8 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { BASE_RETRIEVAL } from "../_shared/marking/base-retrieval.ts";
 import { overlayFor } from "../_shared/marking/registry.ts";
+import { checkNumericalMatch } from "../_shared/marking/numeric.ts";
+import { AI_PROVIDER, decodeRetrievalVerdict, logUsage, validRequestId, type UsageEvent } from "../_shared/ai.ts";
 
 /* mark-preview — ANONYMOUS, ungated retrieval marking for the public revision
  * booklets on interactive-science.com.
@@ -19,8 +21,8 @@ import { overlayFor } from "../_shared/marking/registry.ts";
  *      it would pollute teachers' gradebooks) and NEVER writes the answer cache
  *      (anon answers must not shape the authoritative cache). It only READS the
  *      cache, to serve popular answers without paying for AI.
- *   3. It is rate-limited per caller IP (anon_mark_bump) as a cost guard. The
- *      limiter FAILS OPEN — a missing/broken limiter never blocks a learner. */
+ *   3. Only PAID calls consume the per-IP allowance. The limiter fails closed
+ *      before AI, while exact/numeric/cache hits remain free and available. */
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const MODEL = "claude-haiku-4-5-20251001";
@@ -48,18 +50,6 @@ const CONFIRMATION_THRESHOLD = 3;
 const MAX_HITS_BEFORE_REVERIFY = 50;
 const MAX_AGE_DAYS_BEFORE_REVERIFY = 90;
 
-function extractNumbers(text: string): number[] {
-  const matches = text.match(/(?<![\w.])-?\d+(?:\.\d+)?(?![\w.])/g);
-  return matches ? matches.map(Number) : [];
-}
-
-function checkNumericalMatch(modelAnswer: string, studentAnswer: string): boolean {
-  const modelNums = extractNumbers(modelAnswer);
-  if (modelNums.length !== 1) return false;
-  const target = modelNums[0];
-  return extractNumbers(studentAnswer).some(n => n === target);
-}
-
 function normalise(text: string): string {
   let t = (text || "").toLowerCase().trim();
   t = t.replace(/[.,;:!?\"“”‘’()\[\]{}\/\\]/g, " ");
@@ -77,17 +67,16 @@ function callerBucket(req: Request): string {
   return first || req.headers.get("cf-connecting-ip") || "unknown";
 }
 
-// Atomically bump + check the daily anonymous allowance. FAILS OPEN: any limiter
-// error (missing migration, transient DB) returns "allowed" — a cost guard must
-// never block a genuine learner.
+// Atomically bump + check the daily anonymous allowance. This is called only
+// immediately before a paid request; limiter errors fail closed to protect spend.
 async function withinAnonLimit(req: Request): Promise<boolean> {
-  if (!sb) return true;
+  if (!sb) return false;
   try {
     const { data, error } = await sb.rpc("anon_mark_bump", { p_bucket: callerBucket(req), p_limit: ANON_DAILY_LIMIT });
-    if (error) return true;
+    if (error) return false;
     return data !== false;
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -114,7 +103,17 @@ async function tryCacheLookup(question_id: string, normalised: string) {
   }
 }
 
-async function callAiMark(overlay: string, question: string, model_answer: string, student_answer: string, marks: number) {
+async function callAiMark(
+  label: string,
+  source: string,
+  overlay: string,
+  question: string,
+  model_answer: string,
+  student_answer: string,
+  marks: number,
+  request_id: string,
+) {
+  const started = performance.now();
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -124,7 +123,7 @@ async function callAiMark(overlay: string, question: string, model_answer: strin
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 300,
+      max_tokens: 180,
       system: [
         { type: "text", text: BASE_RETRIEVAL, cache_control: { type: "ephemeral" } },
         { type: "text", text: overlay, cache_control: { type: "ephemeral" } },
@@ -143,9 +142,24 @@ async function callAiMark(overlay: string, question: string, model_answer: strin
     }),
   });
   const data = await response.json();
+  const event: UsageEvent = {
+    call_label: label, source, operation: "mark_preview",
+    provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
+    latency_ms: performance.now() - started, success: response.ok,
+  };
+  if (!response.ok) {
+    await logUsage(sb, event, { request_id });
+    throw new Error(`Anthropic ${response.status}`);
+  }
   const text = data.content?.[0]?.text || "";
   const clean = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(clean);
+  try {
+    return { verdict: decodeRetrievalVerdict(JSON.parse(clean)), event };
+  } catch (error) {
+    event.success = false;
+    await logUsage(sb, event, { request_id });
+    throw error;
+  }
 }
 
 // Resolve a SHARED question's marking material server-side. Returns null if the
@@ -181,17 +195,13 @@ Deno.serve(async (req: Request) => {
     new Response(JSON.stringify(obj), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   try {
-    const { question_id, student_answer } = await req.json();
+    const { question_id, student_answer, request_id } = await req.json();
 
     if (!question_id || typeof student_answer !== "string" || !student_answer.trim()) {
       return json({ error: "Missing question_id or student_answer" }, 400);
     }
     const answer = student_answer.trim().slice(0, MAX_ANSWER_LEN);
-
-    // Cost guard (fails open).
-    if (!(await withinAnonLimit(req))) {
-      return json({ error: "limit", feedback: "That's all the free practice for now — sign in to keep going.", source: "anon_limit" }, 429);
-    }
+    const requestId = validRequestId(request_id) || crypto.randomUUID();
 
     const q = await resolveSharedQuestion(question_id);
     if (!q) return json({ error: "Question not available" }, 404);
@@ -211,22 +221,31 @@ Deno.serve(async (req: Request) => {
       } else if (!ANTHROPIC_API_KEY) {
         verdict = { correct: false, marks_awarded: 0, feedback: "Marking unavailable right now.", flagged: false, source: "fallback" };
       } else {
+        // Cache and deterministic answers never consume the anonymous allowance.
+        // A broken limiter cannot silently expose an unlimited paid endpoint.
+        if (!(await withinAnonLimit(req))) {
+          return json({ error: "limit", feedback: "That's all the free practice for now — sign in to keep going.", source: "anon_limit" }, 429);
+        }
         const overlay = overlayFor(q.marker_profile, "retrieval");
-        const first = await callAiMark(overlay, q.question, q.model_answer, answer, maxMarks);
+        const firstCall = await callAiMark("first", "ai", overlay, q.question, q.model_answer, answer, maxMarks, requestId);
+        await logUsage(sb, firstCall.event, { request_id: requestId });
+        const first = firstCall.verdict;
         if (first.correct || first.flagged) {
-          verdict = { correct: !!first.correct, marks_awarded: first.marks_awarded ?? (first.correct ? maxMarks : 0), feedback: first.feedback || "", flagged: !!first.flagged, source: "ai" };
+          verdict = { correct: !!first.correct, marks_awarded: first.marks_awarded ?? (first.correct ? maxMarks : 0), feedback: first.feedback || (first.correct ? "Correct." : ""), flagged: !!first.flagged, source: "ai" };
         } else {
           // Double-check only non-high-confidence wrongs — same lever as mark-answer:
           // a confidently-wrong verdict is rarely overturned, so don't pay for it.
           let overturned: { correct?: boolean; marks_awarded?: number; feedback?: string } | null = null;
           if (first.confidence !== "high") {
             try {
-              const second = await callAiMark(overlay, q.question, q.model_answer, answer, maxMarks);
+              const secondCall = await callAiMark("second", "ai_double_check", overlay, q.question, q.model_answer, answer, maxMarks, requestId);
+              await logUsage(sb, secondCall.event, { request_id: requestId });
+              const second = secondCall.verdict;
               if (second.correct) overturned = second;
             } catch { /* keep the confirmed-wrong verdict */ }
           }
           verdict = overturned
-            ? { correct: true, marks_awarded: overturned.marks_awarded ?? maxMarks, feedback: overturned.feedback || "", flagged: false, source: "ai_double_check_overturned" }
+            ? { correct: true, marks_awarded: overturned.marks_awarded ?? maxMarks, feedback: overturned.feedback || "Correct.", flagged: false, source: "ai_double_check_overturned" }
             : { correct: false, marks_awarded: first.marks_awarded ?? 0, feedback: first.feedback || "", flagged: !!first.flagged, source: "ai" };
         }
       }
@@ -245,6 +264,7 @@ Deno.serve(async (req: Request) => {
       feedback: verdict.feedback,
       flagged: verdict.flagged,
       source: verdict.source,
+      request_id: requestId,
     });
   } catch (error) {
     return json({ correct: false, marks_awarded: 0, feedback: "Marking error — try again.", flagged: false, source: "error", error: String(error) }, 500);

@@ -93,6 +93,9 @@ export function Student({ user }) {
   const [speechError, setSpeechError] = useState("");
   const recognitionRef = useRef(null);
   const ansBaseRef = useRef("");
+  // React state updates after the current event turn; this synchronous lock closes
+  // the double-click window before `marking` has re-rendered.
+  const submissionLockRef = useRef(false);
 
   useEffect(() => { load(); }, []);
 
@@ -462,11 +465,13 @@ export function Student({ user }) {
     if (r.response_id) setLastResponseId(r.response_id);
     setStats(s => ({ t: s.t + 1, c: s.c + (r.correct ? 1 : 0) }));
     setSessionQCount(n => n + 1);
+    submissionLockRef.current = false;
     setMarking(false);
   };
 
   const submit = async () => {
-    if (!ans.trim() || marking) return;
+    if (!ans.trim() || marking || submissionLockRef.current) return;
+    submissionLockRef.current = true;
     stopMicIfActive();
     setMarking(true);
     const q = currentActiveQs()[qi];
@@ -477,10 +482,11 @@ export function Student({ user }) {
     applyVerdict(q, ans, r);
   };
 
-  // Multiple choice: the student taps an option. Marked deterministically by index
-  // (no AI), recorded directly, then the same bookkeeping as a typed answer runs.
+  // Multiple choice: the student taps an option. The server checks the index
+  // deterministically (no AI), records it, then normal bookkeeping runs.
   const submitMcq = async (idx) => {
-    if (marking || res) return;
+    if (marking || res || submissionLockRef.current) return;
+    submissionLockRef.current = true;
     setMarking(true);
     const q = currentActiveQs()[qi];
     const chosen = (q.options || [])[idx] ?? "";
@@ -489,7 +495,7 @@ export function Student({ user }) {
     const feedback = correct
       ? "Correct!"
       : `The correct answer is: ${(q.options || [])[q.correct_index] ?? q.model_answer}`;
-    const r = await sb.recordMcqResponse({ question_id: q.id, class_id: cls.id, student_id: user.id, student_answer: chosen, correct, marks: q.marks, feedback });
+    const r = await sb.recordMcqResponse({ question_id: q.id, class_id: cls.id, student_id: user.id, student_answer: chosen, selected_index: idx, correct, marks: q.marks, feedback });
     applyVerdict(q, chosen, r);
   };
 
@@ -507,6 +513,7 @@ export function Student({ user }) {
       return nextCooldown;
     });
     setQi(0); setAns(""); setRes(null);
+    submissionLockRef.current = false;
     setFlagging(false); setFlagReason(""); setFlagMsg(""); setLastResponseId(null);
   };
 

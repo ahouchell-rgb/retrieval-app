@@ -11,9 +11,11 @@
 //   NEXT_PUBLIC_SUPA_URL, NEXT_PUBLIC_SUPA_KEY.
 
 import mammoth from "mammoth";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import {
   SUPA_URL, ANON_KEY, SERVICE_KEY, ANTHROPIC_API_KEY,
   jsonResponse as json, rest, getAuthedUid, logUsage, overBackstop, anthropicMessages, responseText,
+  contentHash, requestHash, getCachedOperation, putCachedOperation,
 } from "../../../lib/serverSupa";
 
 export const runtime = "nodejs";
@@ -22,6 +24,8 @@ export const maxDuration = 60;
 const EXTRACT_MODEL = process.env.ANTHROPIC_EXTRACT_MODEL || "claude-haiku-4-5-20251001";
 const MAX_TEXT_CHARS = 24000;            // bound the prompt for the .docx text path
 const MAX_BINARY_BYTES = 18 * 1024 * 1024; // PDF/image cap (base64 inflates ~33%; API limit ~32MB)
+const MIN_LOCAL_PDF_CHARS = 300;          // shorter usually means a scan; use vision fallback
+const PARSER_VERSION = 2;
 
 const EXTRACT_SYSTEM = `You extract exam questions from a UK secondary past paper (given as text, a PDF, or an image). Return ONLY a JSON array (no prose, no code fences) of objects:
 {"label": string, "text": string, "marks": number|null, "command_word": string|null}
@@ -30,6 +34,22 @@ const EXTRACT_SYSTEM = `You extract exam questions from a UK secondary past pape
 - marks: the mark tariff if shown (e.g. "[3 marks]" -> 3), else null.
 - command_word: the GCSE/KS3 command word if identifiable (State, Define, Describe, Explain, Calculate, Suggest, Evaluate, Compare), else null.
 Include every distinct question and sub-question a pupil answers, in order. Ignore cover pages, blank lines, "Answer all questions", and formula sheets. If you cannot find any questions, return [].`;
+
+async function extractPdfText(buffer) {
+  const task = getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false });
+  const pdf = await task.promise;
+  try {
+    const pages = [];
+    for (let n = 1; n <= Math.min(pdf.numPages, 80); n++) {
+      const page = await pdf.getPage(n);
+      const content = await page.getTextContent();
+      pages.push(content.items.map(item => typeof item?.str === "string" ? item.str : "").filter(Boolean).join(" "));
+    }
+    return pages.join("\n\n").replace(/[ \t]+/g, " ").trim();
+  } finally {
+    await pdf.destroy();
+  }
+}
 
 export async function POST(req) {
   if (!SERVICE_KEY || !ANON_KEY) return json({ error: "Server not configured." }, 500);
@@ -50,11 +70,6 @@ export async function POST(req) {
     schoolId = profile?.school_id || null;
     if (profile?.role !== "moderator" && !path.startsWith(`${uid}/`)) return json({ error: "Not your file." }, 403);
   } catch { return json({ error: "Could not verify access." }, 403); }
-  // Cost backstop on the parse call too (fails open).
-  if (await overBackstop(schoolId)) {
-    return json({ error: "AI parsing is paused for your school right now — please check your usage." }, 429);
-  }
-
   // Accept Word (.docx, parsed via mammoth) or a PDF / image (read multimodally by Claude).
   const ext = (path.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
   const IMAGE_MEDIA = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
@@ -75,8 +90,20 @@ export async function POST(req) {
     buffer = Buffer.from(await r.arrayBuffer());
   } catch (e) { return json({ error: "Could not read the uploaded file: " + String(e) }, 502); }
 
+  const hash = requestHash({ operation: "paper_parse", version: PARSER_VERSION, uid, path, file: contentHash(buffer), model: EXTRACT_MODEL });
+  const cached = await getCachedOperation("paper_parse", hash);
+  if (cached?.result?.questions) {
+    return json({ ok: true, questions: cached.result.questions, extraction: cached.result.extraction || "cached", cached: true });
+  }
+
+  // Cost backstop applies only when this request will actually call the model.
+  if (await overBackstop(schoolId)) {
+    return json({ error: "AI parsing is paused for your school right now — please check your usage." }, 429);
+  }
+
   // Build the user content: extracted text for Word, or a multimodal block for PDF/image.
   let userContent;
+  let extraction = "multimodal";
   if (isDocx) {
     let text;
     try {
@@ -85,8 +112,22 @@ export async function POST(req) {
     } catch (e) { return json({ error: "Could not read text from that document: " + String(e) }, 422); }
     if (!text) return json({ error: "That document had no readable text. Type the questions in the notes box instead." }, 422);
     userContent = `Past paper text:\n\n${text.slice(0, MAX_TEXT_CHARS)}`;
-  } else {
-    // PDF / image: send the bytes to Claude (inline base64 — GA, no beta header). Bound the size.
+    extraction = "docx_text";
+  } else if (isPdf) {
+    // Digital PDFs are usually text-bearing. Extract that locally first: it is
+    // faster and sends far fewer provider tokens than uploading every page as a
+    // document. Scanned/image-only PDFs fall back to Claude vision.
+    let text = "";
+    try { text = await extractPdfText(buffer); } catch { /* vision fallback below */ }
+    if (text.length >= MIN_LOCAL_PDF_CHARS) {
+      userContent = `Past paper text:\n\n${text.slice(0, MAX_TEXT_CHARS)}`;
+      extraction = "pdf_text";
+    }
+  }
+
+  if (!userContent) {
+    // PDF scan / image: send bytes to Claude (inline base64). Bound the size.
+    extraction = isPdf ? "pdf_vision" : "image_vision";
     if (buffer.length > MAX_BINARY_BYTES) {
       return json({ error: "That file is too large to read automatically — try a smaller PDF/photo, or type the questions in the notes box." }, 413);
     }
@@ -104,7 +145,12 @@ export async function POST(req) {
     system: [{ type: "text", text: EXTRACT_SYSTEM }],
     messages: [{ role: "user", content: userContent }],
   });
-  logUsage("paper-parse", schoolId, data?.usage);
+  const requestId = crypto.randomUUID();
+  await logUsage("paper-parse", schoolId, data?.usage, {
+    model: EXTRACT_MODEL, request_id: requestId, operation: "paper_parse",
+    latency_ms: data?._telemetry?.latency_ms, success: data?._telemetry?.success,
+  }).catch(() => {});
+  if (!data?._telemetry?.success) return json({ error: "Could not read questions from that paper — try again." }, 502);
 
   let parsed;
   try { parsed = JSON.parse(responseText(data)); } catch { parsed = null; }
@@ -121,5 +167,10 @@ export async function POST(req) {
       command_word: typeof q.command_word === "string" ? q.command_word.slice(0, 20) : null,
     }));
 
-  return json({ ok: true, questions });
+  await putCachedOperation({
+    operation: "paper_parse", request_hash: hash, actor_id: uid, school_id: schoolId,
+    model: EXTRACT_MODEL, result: { questions, extraction },
+  });
+
+  return json({ ok: true, questions, extraction, cached: false });
 }

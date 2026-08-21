@@ -1,5 +1,6 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { AI_PROVIDER, logUsage, requestHash, type UsageEvent } from "../_shared/ai.ts";
 
 // AI question generation for the question bank (Tier-2: question acquisition).
 // Staff-only. Returns DRAFTS — it never writes to `questions`; the teacher reviews
@@ -70,7 +71,17 @@ Deno.serve(async (req: Request) => {
       : "";
 
     const userMsg = `Write ${n} ${stage} science retrieval questions for the topic: "${topic}".${focusLine}${avoid}`;
+    const hash = await requestHash({ operation: "generate_questions", version: 2, user_id: user.id, model: MODEL, userMsg });
+    const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const cached = await sb.from("ai_operation_cache")
+      .select("result").eq("operation", "generate_questions").eq("request_hash", hash)
+      .gte("created_at", since).limit(1);
+    if (!cached.error && cached.data?.[0]?.result?.questions) {
+      return json({ questions: cached.data[0].result.questions, cached: true });
+    }
 
+    const requestId = crypto.randomUUID();
+    const started = performance.now();
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
@@ -82,16 +93,13 @@ Deno.serve(async (req: Request) => {
       }),
     });
     const data = await resp.json();
-    // Fire-and-forget usage log (same shape as mark-answer's logUsage).
-    try {
-      sb.from("ai_usage").insert({
-        call_label: "generate", source: "generate_questions", school_id: profile.school_id ?? null,
-        input_tokens: Number(data?.usage?.input_tokens) || 0,
-        output_tokens: Number(data?.usage?.output_tokens) || 0,
-        cache_creation_tokens: Number(data?.usage?.cache_creation_input_tokens) || 0,
-        cache_read_tokens: Number(data?.usage?.cache_read_input_tokens) || 0,
-      }).then(() => {}).catch(() => {});
-    } catch (_) { /* ignore */ }
+    const event: UsageEvent = {
+      call_label: "generate", source: "generate_questions", operation: "generate_questions",
+      provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
+      latency_ms: performance.now() - started, success: resp.ok,
+    };
+    await logUsage(sb, event, { school_id: profile.school_id ?? null, request_id: requestId });
+    if (!resp.ok) return json({ error: `Question generation failed (${resp.status})` }, 502);
 
     const text = data?.content?.[0]?.text || "";
     const clean = text.replace(/```json|```/g, "").trim();
@@ -107,7 +115,12 @@ Deno.serve(async (req: Request) => {
       .slice(0, n);
 
     if (!out.length) return json({ error: "No usable questions were generated — try a more specific topic." }, 502);
-    return json({ questions: out });
+    await sb.from("ai_operation_cache").insert({
+      operation: "generate_questions", request_hash: hash, actor_id: user.id,
+      school_id: profile.school_id ?? null, provider: AI_PROVIDER, model: MODEL,
+      result: { questions: out },
+    }).then(() => {}).catch(() => {});
+    return json({ questions: out, cached: false });
   } catch (error) {
     return json({ error: String(error) }, 500);
   }

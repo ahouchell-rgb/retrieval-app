@@ -1,39 +1,73 @@
-// Public health endpoint for uptime monitoring (UptimeRobot / Better Stack /
-// GitHub Actions cron). It actively marks one known answer and checks the
-// verdict source, so it catches the failure that went unnoticed for ~3 days:
-// AI marking silently falling back to local fuzzy matching (Anthropic
-// key/billing). Returns 200 when marking is healthy, 503 otherwise — point a
-// monitor at GET /api/health and alert on 503.
+// Public checks are deliberately free: they verify that the deployed marking
+// function is reachable without triggering a provider call. A secret-gated deep
+// check verifies Anthropic at most once per 15 minutes.
+import { ANTHROPIC_API_KEY, anthropicMessages, logUsage } from "../../../lib/serverSupa";
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Public Supabase ref + anon key (already shipped in the browser bundle; RLS protects data).
-const SUPA = "https://uvzukwoxqhcxaxtzrziy.supabase.co";
-const ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV2enVrd294cWhjeGF4dHpyeml5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQzNDUyNTIsImV4cCI6MjA4OTkyMTI1Mn0.PtT24EfMfTckYaq9jXBPRuCsG6utWMLcHs9H8buM70c";
+const SUPA = process.env.NEXT_PUBLIC_SUPA_URL || "https://uvzukwoxqhcxaxtzrziy.supabase.co";
+const ANON = process.env.NEXT_PUBLIC_SUPA_KEY;
+const MODEL = "claude-haiku-4-5-20251001";
+const DEEP_TTL_MS = 15 * 60 * 1000;
+let deepCache = null;
 
-const HEALTHY = new Set(["ai", "ai_double_check_confirmed", "ai_double_check_overturned", "numerical_match", "exact_match", "cache"]);
+const response = (obj, status) => new Response(JSON.stringify(obj), {
+  status,
+  headers: { "content-type": "application/json", "cache-control": "no-store" },
+});
 
-export async function GET() {
-  const json = (obj, status) => new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+async function reachabilityCheck() {
+  if (!ANON) return { ok: false, reason: "Health check is not configured." };
   try {
     const r = await fetch(`${SUPA}/functions/v1/mark-answer`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: ANON },
-      body: JSON.stringify({
-        question: "Why do plants need chlorophyll?",
-        model_answer: "to absorb light energy for photosynthesis",
-        student_answer: "it absorbs light energy so the plant can photosynthesise",
-        marks: 1,
-      }),
-      signal: AbortSignal.timeout(25000),
+      method: "OPTIONS",
+      headers: { apikey: ANON, origin: "https://retrieval-app.com" },
+      signal: AbortSignal.timeout(8000),
     });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !HEALTHY.has(d.source)) {
-      // "error"/"fallback" => Anthropic call failed (key/billing) — the silent outage.
-      return json({ ok: false, reason: "AI marking unhealthy", source: d.source ?? null, status: r.status }, 503);
-    }
-    return json({ ok: true, source: d.source }, 200);
-  } catch (e) {
-    return json({ ok: false, reason: "mark-answer unreachable", error: String(e) }, 503);
+    return r.ok ? { ok: true, check: "reachability" } : { ok: false, reason: "Marking service unavailable.", status: r.status };
+  } catch {
+    return { ok: false, reason: "Marking service unreachable." };
   }
+}
+
+async function deepCheck() {
+  if (deepCache && Date.now() - deepCache.at < DEEP_TTL_MS) return { ...deepCache.result, cached: true };
+  if (!ANTHROPIC_API_KEY) return { ok: false, reason: "AI provider is not configured.", check: "deep" };
+  const requestId = crypto.randomUUID();
+  const data = await anthropicMessages({
+    model: MODEL,
+    max_tokens: 2,
+    messages: [{ role: "user", content: "Reply OK" }],
+  });
+  const ok = !!data?._telemetry?.success;
+  await logUsage("health", null, data?.usage, {
+    model: MODEL,
+    request_id: requestId,
+    operation: "health_check",
+    latency_ms: data?._telemetry?.latency_ms,
+    success: ok,
+  }).catch(() => {});
+  const result = ok ? { ok: true, check: "deep" } : { ok: false, reason: "AI provider unavailable.", check: "deep" };
+  deepCache = { at: Date.now(), result };
+  return result;
+}
+
+export async function GET(req) {
+  const configuredSecret = process.env.HEALTH_CHECK_SECRET || "";
+  const suppliedSecret = req.headers.get("x-health-check-secret") || "";
+  const wantsDeep = suppliedSecret.length > 0;
+
+  if (wantsDeep) {
+    if (!configuredSecret || suppliedSecret !== configuredSecret) return response({ ok: false, reason: "Not authorised." }, 401);
+    try {
+      const result = await deepCheck();
+      return response(result, result.ok ? 200 : 503);
+    } catch {
+      return response({ ok: false, reason: "AI provider unreachable.", check: "deep" }, 503);
+    }
+  }
+
+  const result = await reachabilityCheck();
+  return response(result, result.ok ? 200 : 503);
 }

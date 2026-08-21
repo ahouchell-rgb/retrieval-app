@@ -2,6 +2,10 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { BASE_PAPER } from "../_shared/marking/base-paper.ts";
 import { overlayFor } from "../_shared/marking/registry.ts";
+import {
+  AI_PROVIDER, claimRequest, decodePaperVerdict, finishRequest,
+  logUsage, validRequestId, type UsageEvent,
+} from "../_shared/ai.ts";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const MODEL = "claude-haiku-4-5-20251001";
@@ -86,36 +90,26 @@ async function overBackstop(school_id: string | null): Promise<boolean> {
   }
 }
 
-// Fire-and-forget AI usage logging. Mirrors mark-answer so the prompt-cache state is
-// observable: a warm cache shows cache_read_tokens > 0 for the "mark-paper" call_label
-// in ai_usage; cache_read_tokens stuck at 0 means the prefix is below the 4096 floor.
-// school_id attributes paper-mark spend to the school so school_mark_status (and thus
-// the backstop above) actually counts it.
-function logUsage(label: string, school_id: string | null, usage: Record<string, unknown> | undefined) {
-  if (!sb || !usage) return;
-  const row = {
-    call_label: label,
-    source: "ai",
-    school_id,
-    input_tokens: Number(usage.input_tokens) || 0,
-    output_tokens: Number(usage.output_tokens) || 0,
-    cache_creation_tokens: Number(usage.cache_creation_input_tokens) || 0,
-    cache_read_tokens: Number(usage.cache_read_input_tokens) || 0,
-  };
-  sb.from("ai_usage").insert(row).then(() => {}).catch((e) => console.error("ai_usage insert failed:", e));
-}
-
-async function markWithAI(question: string, command_word: string, marks: number, marking_points: Array<{ text?: string; marks?: number }>, student_answer: string, school_id: string | null, overlay: string) {
+async function markWithAI(
+  question: string,
+  command_word: string,
+  marks: number,
+  marking_points: Array<{ text?: string; marks?: number }>,
+  student_answer: string,
+  overlay: string,
+  context: { school_id: string | null; request_id: string },
+) {
   const pointsList = marking_points
     .map((p, i) => `  ${i}. (${p.marks ?? 1} mark${(p.marks ?? 1) > 1 ? "s" : ""}) ${p.text ?? ""}`)
     .join("\n");
   const userMessage = `Question (${marks} mark${marks > 1 ? "s" : ""}, command word: ${command_word || "none"}):\n${question}\n\nMarking points:\n${pointsList}\n\nStudent's answer:\n${student_answer}\n\nMaximum marks awardable: ${marks}`;
+  const started = performance.now();
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY!, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 600,
+      max_tokens: 320,
       system: [
         // Subject-agnostic examiner engine + per-subject overlay, both cached. base +
         // overlay match the old single prompt size, so caching is unchanged (and never
@@ -127,14 +121,47 @@ async function markWithAI(question: string, command_word: string, marks: number,
     }),
   });
   const data = await response.json();
-  logUsage("mark-paper", school_id, data?.usage);
+  const event: UsageEvent = {
+    call_label: "mark-paper", source: "ai", operation: "mark_paper",
+    provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
+    latency_ms: performance.now() - started, success: response.ok,
+  };
+  if (!response.ok) {
+    await logUsage(sb, event, context);
+    throw new Error(`Anthropic ${response.status}`);
+  }
   const text = data.content?.[0]?.text || "";
   const clean = text.replace(/```json|```/g, "").trim();
-  let parsed: { marks_awarded?: number; awarded_points?: number[]; feedback?: string; flagged?: boolean };
-  try { parsed = JSON.parse(clean); } catch { parsed = { marks_awarded: 0, awarded_points: [], feedback: "Could not parse marking response.", flagged: false }; }
+  let parsed: { marks_awarded?: number; awarded_points?: unknown; feedback?: string; flagged?: boolean };
+  try { parsed = decodePaperVerdict(JSON.parse(clean)); } catch (error) {
+    event.success = false;
+    await logUsage(sb, event, context);
+    throw error;
+  }
   const ma = Math.max(0, Math.min(Number(parsed.marks_awarded) || 0, Number(marks) || 1));
   const ap = Array.isArray(parsed.awarded_points) ? parsed.awarded_points.filter((n) => typeof n === "number" && n >= 0 && n < marking_points.length) : [];
-  return { marks_awarded: ma, awarded_points: ap, feedback: parsed.feedback || "", flagged: !!parsed.flagged };
+  return { verdict: { marks_awarded: ma, awarded_points: ap, feedback: parsed.feedback || "", flagged: !!parsed.flagged }, event };
+}
+
+async function storedPaperVerdict(uid: string, request_id: string, response_id?: string | null) {
+  if (!sb) return null;
+  let query = sb.from("paper_responses")
+    .select("id,attempt_id,paper_question_id,marks_awarded,awarded_points,ai_feedback,flagged,marking_source,paper_attempts!inner(student_id)")
+    .eq("paper_attempts.student_id", uid);
+  query = response_id ? query.eq("id", response_id) : query.eq("request_id", request_id);
+  const { data, error } = await query.limit(1);
+  if (error || !data?.length) return null;
+  const row = data[0];
+  return {
+    marks_awarded: Number(row.marks_awarded) || 0,
+    awarded_points: Array.isArray(row.awarded_points) ? row.awarded_points : [],
+    feedback: row.ai_feedback || "",
+    flagged: !!row.flagged,
+    source: row.marking_source || "idempotent_replay",
+    recorded: true,
+    response_id: row.id,
+    replayed: true,
+  };
 }
 
 Deno.serve(async (req: Request) => {
@@ -142,6 +169,7 @@ Deno.serve(async (req: Request) => {
   const json = (obj: unknown, status = 200) =>
     new Response(JSON.stringify(obj), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+  let activeRequestId: string | null = null;
   try {
     const body = await req.json();
     const { attempt_id, paper_question_id, student_answer } = body;
@@ -183,7 +211,21 @@ Deno.serve(async (req: Request) => {
       ? q.data.marking_points as Array<{ text?: string; marks?: number }> : [];
     if (!question) return json({ error: "Question has no text." }, 400);
 
+    const requestId = validRequestId(body?.request_id) || crypto.randomUUID();
+    activeRequestId = requestId;
+    const claim = await claimRequest(sb, requestId, uid, "mark_paper");
+    if (!claim.claimed) {
+      if (claim.status === "completed") {
+        const prior = await storedPaperVerdict(uid, requestId, claim.response_id);
+        if (prior) return json({ ...prior, request_id: requestId });
+      }
+      if (claim.status === "conflict") return json({ error: "request_id was already used for another operation" }, 409);
+      return json({ error: "This answer is already being marked. Retry shortly.", request_id: requestId }, 409);
+    }
+
     if (!ANTHROPIC_API_KEY) {
+      await finishRequest(sb, requestId, "failed");
+      activeRequestId = null;
       return json({ marks_awarded: 0, awarded_points: [], feedback: "AI marking not configured.", flagged: false, source: "fallback", recorded: false, response_id: null });
     }
 
@@ -191,12 +233,15 @@ Deno.serve(async (req: Request) => {
     // skips the paid call and records nothing. Fails open; never catches normal use.
     const schoolId = await resolveSchoolId(att.data.class_id as string);
     if (await overBackstop(schoolId)) {
+      await finishRequest(sb, requestId, "failed");
+      activeRequestId = null;
       return json({ marks_awarded: 0, awarded_points: [], feedback: "Marking is paused for your school right now — please let your teacher know.", flagged: false, source: "cap_backstop", recorded: false, response_id: null });
     }
 
     const markerProfile = await resolveMarkerProfile(att.data.paper_id as string);
     const overlay = overlayFor(markerProfile, "paper");
-    const verdict = await markWithAI(question, command_word, marks, marking_points, student_answer, schoolId, overlay);
+    const marked = await markWithAI(question, command_word, marks, marking_points, student_answer, overlay, { school_id: schoolId, request_id: requestId });
+    const verdict = marked.verdict;
 
     // Record server-side (authoritative): the attempt and question were already
     // verified above, so neither the marks nor the totals are ever client-supplied.
@@ -206,6 +251,7 @@ Deno.serve(async (req: Request) => {
       attempt_id, paper_question_id, student_answer,
       marks_awarded: verdict.marks_awarded, marks_max: marks,
       ai_feedback: verdict.feedback, awarded_points: verdict.awarded_points, flagged: verdict.flagged,
+      request_id: requestId, marking_source: "ai",
     };
     const existing = await sb.from("paper_responses").select("id").eq("attempt_id", attempt_id).eq("paper_question_id", paper_question_id).limit(1);
     if (!existing.error && existing.data && existing.data.length > 0) {
@@ -225,8 +271,14 @@ Deno.serve(async (req: Request) => {
       await sb.from("paper_attempts").update({ awarded_marks: awarded, total_marks: total }).eq("id", attempt_id);
     }
 
-    return json({ ...verdict, source: "ai", recorded, response_id });
+    await logUsage(sb, marked.event, { school_id: schoolId, request_id: requestId, response_id });
+    if (recorded) await finishRequest(sb, requestId, "completed", response_id);
+    else await finishRequest(sb, requestId, "failed");
+    activeRequestId = null;
+
+    return json({ ...verdict, source: "ai", recorded, response_id, request_id: requestId });
   } catch (error) {
+    if (sb && activeRequestId) await finishRequest(sb, activeRequestId, "failed");
     return json({ marks_awarded: 0, awarded_points: [], feedback: "Marking error — try again.", flagged: false, source: "error", recorded: false, response_id: null, error: String(error) }, 500);
   }
 });

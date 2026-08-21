@@ -163,6 +163,15 @@ export const sb = (() => {
       else window.localStorage.removeItem(PENDING_KEY);
     } catch { /* quota — best effort */ }
   };
+  const newRequestId = () => globalThis.crypto?.randomUUID?.() ||
+    "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+      const r = Math.random() * 16 | 0;
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  const queuePending = (body) => {
+    const pending = readPending();
+    if (!pending.some(item => item?.request_id === body.request_id)) writePending([...pending, body]);
+  };
 
   // POST one submission to the marking function. Sends the user's JWT so the
   // function can identify the pupil and record server-side. Throws on a network
@@ -204,30 +213,17 @@ export const sb = (() => {
     // let the maths marking overlay judge. (skipFakeCheck never reaches the wire.)
     const { skipFakeCheck, ...rest } = payload;
     const fake = skipFakeCheck ? null : detectFakeAnswer(payload.student_answer);
-    const body = { ...rest, prejudged_flagged: fake || undefined };
+    const body = { ...rest, request_id: rest.request_id || newRequestId(), prejudged_flagged: fake || undefined };
     try {
       const d = await callMarkAnswer(body);
       const verdict = { correct: !!d.correct, marks_awarded: d.marks_awarded ?? 0, feedback: d.feedback, flagged: !!d.flagged, source: d.source };
       if (d.recorded) return { ...verdict, recorded: true, response_id: d.response_id ?? null };
-      // Reached the function but it didn't store (transient, or pre-lock-in).
-      // Persist the SERVER's verdict directly so nothing is lost; once the
-      // client-INSERT lock-in lands this fails and falls through to the queue.
-      try {
-        const rows = await q("responses", { method: "POST", body: {
-          student_id: payload.student_id, question_id: payload.question_id, class_id: payload.class_id,
-          student_answer: payload.student_answer, is_correct: verdict.correct,
-          ai_feedback: verdict.flagged ? "FLAGGED: " + verdict.feedback : verdict.feedback, marks_awarded: verdict.marks_awarded,
-        } });
-        const row = Array.isArray(rows) ? rows[0] : rows;
-        return { ...verdict, recorded: true, response_id: row?.id ?? null };
-      } catch {
-        writePending([...readPending(), body]);
-        return { ...verdict, recorded: false, queued: true, response_id: null };
-      }
+      queuePending(body);
+      return { ...verdict, recorded: false, queued: true, response_id: null };
     } catch {
       // Offline: optimistic local verdict for instant feedback; the authoritative
       // mark is recorded by the function when this submission replays.
-      writePending([...readPending(), body]);
+      queuePending(body);
       const local = fake
         ? { correct: false, marks_awarded: 0, feedback: fake, flagged: true }
         : localMark(payload.question, payload.model_answer, payload.student_answer, payload.marks);
@@ -348,24 +344,29 @@ export const sb = (() => {
   const callPaperFeedforward = (payload) => callEdgeRoute(`/api/paper-feedforward`, payload);
   const callParsePaper = (payload) => callEdgeRoute(`/api/parse-paper-docx`, payload);
 
-  // MCQs are marked deterministically from the selected option index, so they do
-  // not need an AI request or marking-cache entry. Record the response directly
-  // and return the same verdict envelope as submitAnswer so Student.js can share
-  // all post-mark scheduling and progress bookkeeping.
-  const recordMcqResponse = async ({ question_id, class_id, student_id, student_answer, correct, marks, feedback }) => {
+  // MCQs are marked deterministically from the selected option index by the same
+  // authoritative edge route, so no AI call or marking-cache entry is needed.
+  const recordMcqResponse = async ({ question_id, class_id, student_id, student_answer, selected_index, correct, marks, feedback }) => {
     const marks_awarded = correct ? (marks || 1) : 0;
     const verdict = { correct: !!correct, marks_awarded, feedback, flagged: false, source: "mcq" };
+    const body = { question_id, class_id, student_id, student_answer, selected_index, request_id: newRequestId() };
     try {
-      const rows = await q("responses", { method: "POST", body: {
-        student_id, question_id, class_id, student_answer,
-        is_correct: !!correct, ai_feedback: feedback, marks_awarded,
-      } });
-      const row = Array.isArray(rows) ? rows[0] : rows;
-      return { ...verdict, recorded: true, response_id: row?.id ?? null };
+      const d = await callMarkAnswer(body);
+      const authoritative = {
+        correct: !!d.correct,
+        marks_awarded: d.marks_awarded ?? 0,
+        feedback: d.feedback,
+        flagged: !!d.flagged,
+        source: d.source || "mcq",
+      };
+      if (d.recorded) return { ...authoritative, recorded: true, response_id: d.response_id ?? null };
+      queuePending(body);
+      return { ...authoritative, recorded: false, queued: true, response_id: null };
     } catch {
-      // The AI-answer offline queue cannot replay MCQs, so keep the deterministic
-      // verdict for the current session and report that persistence did not occur.
-      return { ...verdict, recorded: false, queued: false, response_id: null };
+      // The same idempotent queue now replays MCQs through the authoritative edge
+      // function. The local verdict is UI-only while the network is unavailable.
+      queuePending(body);
+      return { ...verdict, recorded: false, queued: true, response_id: null };
     }
   };
 

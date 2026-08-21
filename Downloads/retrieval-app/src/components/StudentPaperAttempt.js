@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { SUPA_KEY, SUPA_URL, sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { MathInput } from "./MathInput";
@@ -18,6 +18,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
   const [loading, setLoading] = useState(true);
   const [showFinish, setShowFinish] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const submissionLockRef = useRef(false);
 
   useEffect(() => { (async () => {
     setLoading(true);
@@ -72,7 +73,8 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
   const isMaths = paper?.subjects?.marker_profile === "maths";
 
   const submitAnswer = async () => {
-    if (!ans.trim() || marking || !currentQ) return;
+    if (!ans.trim() || marking || !currentQ || submissionLockRef.current) return;
+    submissionLockRef.current = true;
     setMarking(true);
     try {
       // The function grades from the DB's marking points AND writes the response
@@ -90,6 +92,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
           marks: currentQ.marks,
           marking_points: currentQ.marking_points || [],
           student_answer: ans,
+          request_id: crypto.randomUUID(),
         }),
       });
       const d = await r.json();
@@ -111,12 +114,14 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
       }
       setLastResult(d);
     } catch (e) { console.error("mark failed", e); alert("Marking failed: " + e.message); }
+    submissionLockRef.current = false;
     setMarking(false);
   };
 
   const next = () => {
     setLastResult(null);
     setAns("");
+    submissionLockRef.current = false;
     if (qi >= questions.length - 1) {
       // Last question — show finish screen
       setShowFinish(true);

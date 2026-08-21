@@ -92,10 +92,5 @@ FEEDBACK STYLE:
 - Be specific and useful but do not simply print the whole mark scheme back. Do not be sarcastic.
 
 RESPONSE FORMAT:
-Respond with ONLY valid JSON, no backticks, no commentary:
-{
-  "marks_awarded": <integer between 0 and marks_max>,
-  "awarded_points": [<integer indices, 0-based, of marking points awarded>],
-  "feedback": "<one or two sentences in the voice of an examiner: what they earned, what was missing, written as you would write on a script>",
-  "flagged": <true|false>
-}`;
+Respond with ONLY valid compact JSON, no backticks or commentary:
+{"m":<integer 0 to marks_max>,"p":[<0-based marking-point indices awarded>],"f":"<one or two examiner-style sentences: what earned marks and what was missing>","x":<true|false>}`;

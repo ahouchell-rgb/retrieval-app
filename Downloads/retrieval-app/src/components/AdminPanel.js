@@ -521,7 +521,7 @@ export function AdminPanel({ user }) {
           try {
             const cutoff = new Date(Date.now() - days * 86400000).toISOString();
             const rows = await sb.qAll("ai_usage", { params: {
-              select: "ts,call_label,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens",
+              select: "ts,call_label,input_tokens,output_tokens,cache_creation_tokens,cache_read_tokens,provider,model,request_id,response_id,operation,latency_ms,success",
               ts: `gte.${cutoff}`,
               order: "ts.desc"
             }});
@@ -554,14 +554,18 @@ export function AdminPanel({ user }) {
         const callsPerHit = rows.filter(r => (r.cache_read_tokens || 0) > 0).length;
         const callsPerWrite = rows.filter(r => (r.cache_creation_tokens || 0) > 0).length;
 
-        // Haiku 4.5 pricing in USD per million tokens
-        const PRICE_INPUT = 1.0;       // fresh prompt tokens
-        const PRICE_OUTPUT = 5.0;
-        const PRICE_CACHE_READ = 0.10;  // 10% of input
-        const PRICE_CACHE_WRITE = 1.25; // 125% of input (one-off write surcharge)
-        const usdActual = (totalInput * PRICE_INPUT + totalOutput * PRICE_OUTPUT + totalCacheRead * PRICE_CACHE_READ + totalCacheWrite * PRICE_CACHE_WRITE) / 1_000_000;
+        const pricing = (model) => String(model || "").includes("sonnet")
+          ? { input: 3, output: 15, read: 0.3, write: 3.75 }
+          : { input: 1, output: 5, read: 0.1, write: 1.25 };
+        const usdActual = rows.reduce((sum, r) => {
+          const p = pricing(r.model);
+          return sum + ((r.input_tokens || 0) * p.input + (r.output_tokens || 0) * p.output + (r.cache_read_tokens || 0) * p.read + (r.cache_creation_tokens || 0) * p.write) / 1_000_000;
+        }, 0);
         // Hypothetical: what we'd have paid if every cached token had been billed at full input rate
-        const usdNoCache = (totalInput * PRICE_INPUT + totalOutput * PRICE_OUTPUT + (totalCacheRead + totalCacheWrite) * PRICE_INPUT) / 1_000_000;
+        const usdNoCache = rows.reduce((sum, r) => {
+          const p = pricing(r.model);
+          return sum + ((r.input_tokens || 0) * p.input + (r.output_tokens || 0) * p.output + ((r.cache_read_tokens || 0) + (r.cache_creation_tokens || 0)) * p.input) / 1_000_000;
+        }, 0);
         const usdSaved = Math.max(0, usdNoCache - usdActual);
         const savedPct = usdNoCache > 0 ? Math.round((usdSaved / usdNoCache) * 100) : 0;
         const gbp = (usd) => `£${(usd * 0.79).toFixed(2)}`;
@@ -640,7 +644,7 @@ export function AdminPanel({ user }) {
                 </div>
 
                 <div style={{ marginTop: 16, padding: "10px 12px", background: C.card, border: `1px dashed ${C.bdr}`, borderRadius: 8, fontSize: 11, color: C.mid, lineHeight: 1.6 }}>
-                  <strong style={{ color: C.txt }}>How this works.</strong> Every AI call to Haiku writes a row to <code style={{ background: C.bg, padding: "1px 4px", borderRadius: 3 }}>ai_usage</code> with token counts from Anthropic’s response. Cache hit rate = cache-read tokens ÷ (cache-read + cache-write tokens). Cache reads cost ~10% of fresh input. Once warm and busy, hit rate should sit at 80–95%. After a quiet period the cache expires (~5 min) and the next call writes a fresh entry.
+                  <strong style={{ color: C.txt }}>How this works.</strong> Every AI call writes a row to <code style={{ background: C.bg, padding: "1px 4px", borderRadius: 3 }}>ai_usage</code> with provider, model, request/response IDs, operation, latency, success and token counts. Cache hit rate = cache-read tokens ÷ (cache-read + cache-write tokens). Cache reads cost ~10% of fresh input. Once warm and busy, hit rate should sit at 80–95%. After a quiet period the cache expires (~5 min) and the next call writes a fresh entry.
                 </div>
               </>
             )}

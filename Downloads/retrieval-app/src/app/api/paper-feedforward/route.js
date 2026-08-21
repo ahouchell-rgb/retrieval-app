@@ -15,7 +15,7 @@
 import { buildFeedforwardDocx } from "../../../lib/feedforwardDocx";
 import {
   SUPA_URL, ANON_KEY, SERVICE_KEY, ANTHROPIC_API_KEY,
-  jsonResponse as json, rest, getAuthedUid, logUsage, overBackstop, anthropicMessages, responseText,
+  jsonResponse as json, rest, getAuthedUid, logUsage, overBackstop, anthropicMessages, responseText, requestHash,
 } from "../../../lib/serverSupa";
 
 export const runtime = "nodejs";
@@ -24,6 +24,7 @@ export const maxDuration = 60;
 // Generation wants a stronger model than the Haiku marker; configurable.
 const MODEL = process.env.ANTHROPIC_FEEDFORWARD_MODEL || "claude-sonnet-4-6";
 const MAX_OUTPUT_TOKENS = 4096;
+const PROMPT_VERSION = 2;
 
 function buildPrompt({ paper, subjectName, struggledQuestions, notes }) {
   const qList = struggledQuestions.length
@@ -93,10 +94,6 @@ export async function POST(req) {
       if (cls?.school_id) schoolId = cls.school_id;
     } catch { /* fall back to teacher's school */ }
   }
-  if (await overBackstop(schoolId)) {
-    return json({ error: "AI generation is paused for your school right now — please check your usage." }, 429);
-  }
-
   // Assemble the struggled questions from three sources.
   let struggledQuestions = [];
   // (a) existing paper questions selected by id
@@ -123,8 +120,28 @@ export async function POST(req) {
   // Generate the structured spec, then build the .docx deterministically.
   const subjectName = paper?.subjects?.name || null;
   const prompt = buildPrompt({ paper, subjectName, struggledQuestions, notes });
+  const hash = requestHash({ operation: "paper_feedforward", version: PROMPT_VERSION, model: MODEL, paper_id, class_id: class_id || null, source_upload_path: source_upload_path || null, prompt });
+
+  // Retry-safe: an identical teacher request returns the already-built document.
+  try {
+    const existing = await rest("paper_feedforward_sheets", { params: { request_hash: `eq.${hash}`, select: "*", limit: "1" } });
+    if (existing?.[0]) {
+      const sheet = existing[0];
+      return json({ ok: true, sheet, url: `${SUPA_URL}/storage/v1/object/public/paper-uploads/${sheet.docx_path}`, cached: true });
+    }
+  } catch { /* migration not present or cache miss: continue */ }
+
+  if (await overBackstop(schoolId)) {
+    return json({ error: "AI generation is paused for your school right now — please check your usage." }, 429);
+  }
+
   const data = await anthropicMessages({ model: MODEL, max_tokens: MAX_OUTPUT_TOKENS, messages: [{ role: "user", content: prompt }] });
-  logUsage("paper-feedforward", schoolId, data?.usage);
+  const requestId = crypto.randomUUID();
+  await logUsage("paper-feedforward", schoolId, data?.usage, {
+    model: MODEL, request_id: requestId, operation: "paper_feedforward",
+    latency_ms: data?._telemetry?.latency_ms, success: data?._telemetry?.success,
+  }).catch(() => {});
+  if (!data?._telemetry?.success) return json({ error: "Could not generate a feedforward sheet — please try again." }, 502);
   let spec;
   try { spec = JSON.parse(responseText(data)); } catch { spec = null; }
   if (!spec || !Array.isArray(spec.boxes) || spec.boxes.length === 0) {
@@ -159,10 +176,11 @@ export async function POST(req) {
       spec,
       docx_path: docxPath,
       title: spec.title || `${paper.name} — feedforward`,
+      request_hash: hash,
     } });
     sheet = Array.isArray(rows) ? rows[0] : rows;
   } catch (e) { return json({ error: "Saved the document but could not record it: " + String(e) }, 500); }
 
   const publicUrl = `${SUPA_URL}/storage/v1/object/public/paper-uploads/${docxPath}`;
-  return json({ ok: true, sheet, url: publicUrl });
+  return json({ ok: true, sheet, url: publicUrl, cached: false });
 }
