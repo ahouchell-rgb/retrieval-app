@@ -18,14 +18,19 @@ const response = (obj, status) => new Response(JSON.stringify(obj), {
 });
 
 async function reachabilityCheck() {
-  if (!ANON) return { ok: false, reason: "Health check is not configured." };
   try {
+    const headers = { origin: "https://retrieval-app.com" };
+    if (ANON) headers.apikey = ANON;
     const r = await fetch(`${SUPA}/functions/v1/mark-answer`, {
       method: "OPTIONS",
-      headers: { apikey: ANON, origin: "https://retrieval-app.com" },
+      headers,
       signal: AbortSignal.timeout(8000),
     });
-    return r.ok ? { ok: true, check: "reachability" } : { ok: false, reason: "Marking service unavailable.", status: r.status };
+    // Any non-5xx response proves the edge service is reachable. OPTIONS is
+    // deliberately used so this never reaches the paid marking path.
+    return r.status < 500
+      ? { ok: true, check: "reachability" }
+      : { ok: false, reason: "Marking service unavailable.", status: r.status };
   } catch {
     return { ok: false, reason: "Marking service unreachable." };
   }
