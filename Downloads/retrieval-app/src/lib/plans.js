@@ -8,6 +8,9 @@
  * The plan lives on the school row (schools.plan); attachProfile (roles.js) embeds it
  * as user.profile.school, so planOf(user) works anywhere a `user` is in scope. */
 
+export const SCHOOL_ANNUAL_PRICE_GBP = 800;
+export const SCHOOL_ANNUAL_PRICE_LABEL = `£${SCHOOL_ANNUAL_PRICE_GBP}`;
+
 export const PLANS = {
   free: {
     key: "free", label: "Starter", priceLabel: "Free",
@@ -15,23 +18,25 @@ export const PLANS = {
     maxClasses: 1, markCap: { period: "month", n: 2000 },
   },
   essentials: {
-    key: "essentials", label: "Essentials", priceLabel: "£890 / school / yr",
+    key: "essentials", label: "Legacy Essentials", priceLabel: "Legacy plan",
     customQuestions: false, leadership: false, mis: false,
     maxPupils: 600, markCap: { period: "term", n: 250000 },
   },
   core: {
-    key: "core", label: "Core", priceLabel: "£2.95–£4.95 / pupil / yr",
-    customQuestions: true, leadership: true, mis: "addon",
+    key: "core", label: "School", priceLabel: `${SCHOOL_ANNUAL_PRICE_LABEL} / school / yr`,
+    customQuestions: true, leadership: true, mis: true,
     markCap: { period: "term", perPupil: 1500 },
   },
   single_cohort: {
-    key: "single_cohort", label: "Single cohort", priceLabel: "£8.95 / pupil / yr",
+    key: "single_cohort", label: "Legacy single cohort", priceLabel: "Legacy plan",
     customQuestions: true, leadership: true, mis: "addon",
     markCap: { period: "term", perPupil: 1500 },
   },
 };
 
-export const PLAN_ORDER = ["free", "essentials", "core", "single_cohort"];
+// New schools use the single School plan. Legacy keys remain selectable so an
+// existing record can still be viewed or deliberately migrated by a moderator.
+export const PLAN_ORDER = ["free", "core", "essentials", "single_cohort"];
 
 /* The school's plan key for a user (defaults to free if unset/unknown). */
 export function planKey(user) {

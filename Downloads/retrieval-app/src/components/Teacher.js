@@ -1244,8 +1244,8 @@ export function Teacher({ user }) {
             : (
               <div style={{ maxWidth: 560, margin: "20px auto", padding: 24, textAlign: "center", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 12 }}>
                 <div style={{ fontSize: 26, marginBottom: 8 }}>🔒</div>
-                <div style={{ fontSize: 16, fontWeight: 700, color: C.txt }}>Writing your own questions is a Core feature</div>
-                <div style={{ fontSize: 13, color: C.mid, marginTop: 8, lineHeight: 1.5 }}>Your plan includes the full shared question bank. To author and edit your own questions, upgrade to Core. Tap below and we&rsquo;ll be in touch about unlocking it for your school.</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: C.txt }}>Writing your own questions is included in the School plan</div>
+                <div style={{ fontSize: 13, color: C.mid, marginTop: 8, lineHeight: 1.5 }}>Your current plan includes the full shared question bank. The £800/year School plan also unlocks authoring and editing your own questions. Tap below and we&rsquo;ll be in touch about enabling it for your school.</div>
                 <RequestCore user={user} />
               </div>
             ))}

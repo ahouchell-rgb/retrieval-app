@@ -5,8 +5,8 @@ import { roleOf } from "../lib/roles";
 import { C } from "../lib/theme";
 import { Btn } from "./ui";
 
-// In-product paywall → captured lead. Hitting the "custom questions is a Core
-// feature" lock is the highest-intent expansion signal a teacher can give, so
+// In-product paywall → captured lead. Hitting the custom-question lock is a
+// high-intent signal that a teacher wants the annual School plan, so
 // instead of a dead-end "speak to your administrator" line we capture it as a lead
 // (source: in_app_paywall) that lands in the moderator AdminPanel "Leads" inbox.
 //
@@ -32,7 +32,7 @@ export function RequestCore({ user }) {
           email: user?.email || null,
           role: roleOf(user) || "teacher",
           plan_interest: "core",
-          message: "In-app request to unlock custom questions (Core) from the Questions tab.",
+          message: "In-app request to unlock custom questions with the £800 annual School plan.",
           source: "in_app_paywall",
         }),
       });
@@ -44,7 +44,7 @@ export function RequestCore({ user }) {
   if (state === "done") {
     return (
       <div style={{ marginTop: 16, fontSize: 13, color: C.grn || C.pri, fontWeight: 600 }}>
-        ✓ Request sent — we&rsquo;ll be in touch about unlocking Core for your school.
+        ✓ Request sent — we&rsquo;ll be in touch about the School plan.
       </div>
     );
   }
@@ -52,7 +52,7 @@ export function RequestCore({ user }) {
   return (
     <div style={{ marginTop: 16 }}>
       <Btn onClick={request} disabled={state === "sending"}>
-        {state === "sending" ? "Sending…" : "Request Core for my school"}
+        {state === "sending" ? "Sending…" : "Ask about the £800 School plan"}
       </Btn>
       {state === "error" && <div style={{ fontSize: 12, color: C.red, marginTop: 8 }}>Couldn&rsquo;t send just now — email schools@feynmaneducation.com and we&rsquo;ll sort it.</div>}
     </div>

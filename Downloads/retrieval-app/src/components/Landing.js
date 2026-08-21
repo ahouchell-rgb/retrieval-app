@@ -2,6 +2,7 @@
 import { C } from "../lib/theme";
 import { SUPA_URL, SUPA_KEY } from "../lib/supabase";
 import { sessionId } from "../lib/anonSession";
+import { SCHOOL_ANNUAL_PRICE_LABEL } from "../lib/plans";
 
 // Public front door (shown at the root when logged out). Two clear paths:
 //   • Log in   — existing students & teachers (accounts are provisioned, not open-signup)
@@ -113,7 +114,7 @@ export function Landing({ onLogin, pupilArrival }) {
           </p>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 28, flexWrap: "wrap" }}>
             <button onClick={onLogin} style={btn(true)}>Log in</button>
-            <a href="/pricing" style={btn(false)}>For schools — pricing &amp; a free pilot</a>
+            <a href="/pricing" style={btn(false)}>For schools — {SCHOOL_ANNUAL_PRICE_LABEL}/year &amp; a free pilot</a>
           </div>
           <div style={{ fontSize: 12.5, color: C.dim, marginTop: 18 }}>
             Students — log in, or join your class with a code. Teachers — your school sets up your account.
@@ -137,9 +138,9 @@ export function Landing({ onLogin, pupilArrival }) {
         <div style={{ marginTop: 28, background: `linear-gradient(135deg, ${C.priSoft}, transparent)`, border: `1px solid ${C.pri}33`, borderRadius: 14, padding: "22px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontSize: 17, fontWeight: 700 }}>Bringing it to your school?</div>
-            <div style={{ fontSize: 13.5, color: C.mid, marginTop: 4 }}>See pricing and start a free pilot — one class or a single year group, no card required.</div>
+            <div style={{ fontSize: 13.5, color: C.mid, marginTop: 4 }}>One whole-school plan at {SCHOOL_ANNUAL_PRICE_LABEL} a year. Start with a free pilot—no card required.</div>
           </div>
-          <a href="/pricing" style={btn(true)}>See pricing &amp; book a pilot</a>
+          <a href="/pricing" style={btn(true)}>See the school plan</a>
         </div>
       </div>
 

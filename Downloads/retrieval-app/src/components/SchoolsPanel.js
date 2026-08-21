@@ -172,7 +172,7 @@ export function SchoolsPanel() {
       })}
 
       <div style={{ marginTop: 12, padding: "10px 12px", background: C.card, border: `1px dashed ${C.bdr}`, borderRadius: 8, fontSize: 11, color: C.mid, lineHeight: 1.6 }}>
-        <strong style={{ color: C.txt }}>How plans work.</strong> Set a school’s plan here after a PO is signed. The plan gates features (Core/Single-cohort unlock custom question authoring — enforced server-side) and sets the fair-use allowance shown above. Caps are soft: pupils are never blocked; an amber bar at 80%+ is your cue to discuss an uplift. AI-marks counts from the term start once usage is attributed to the school.
+        <strong style={{ color: C.txt }}>How plans work.</strong> New paid schools use the £800/year School plan, which unlocks the full product (including custom question authoring, enforced server-side). Legacy plan keys remain here only for existing records. Fair-use caps are soft: pupils are never blocked; an amber bar at 80%+ is your cue to review usage. AI-marks count from the term start once usage is attributed to the school.
       </div>
     </div>
   );

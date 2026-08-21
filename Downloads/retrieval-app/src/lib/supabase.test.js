@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { paginate } from "./supabase.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { paginate, sb } from "./supabase.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 // Build a fake paged source of `total` rows. `serverCap` simulates PostgREST's
 // max-rows (a single request never returns more than serverCap, even if a larger
@@ -51,5 +55,68 @@ describe("paginate", () => {
     const out = await paginate(s.fetchPage, { batch: 1000, max: 50 });
     expect(out).toHaveLength(1000); // stops after the batch that crosses max
     expect(s.calls).toHaveLength(1);
+  });
+});
+
+describe("recordMcqResponse", () => {
+  it("records a correct MCQ directly without calling the AI marker", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => [{ id: "response-123" }],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await sb.recordMcqResponse({
+      question_id: "question-1",
+      class_id: "class-1",
+      student_id: "student-1",
+      student_answer: "Mitochondria",
+      correct: true,
+      marks: 2,
+      feedback: "Correct!",
+    });
+
+    expect(result).toEqual({
+      correct: true,
+      marks_awarded: 2,
+      feedback: "Correct!",
+      flagged: false,
+      source: "mcq",
+      recorded: true,
+      response_id: "response-123",
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, request] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/rest/v1/responses");
+    expect(String(url)).not.toContain("mark-answer");
+    expect(JSON.parse(request.body)).toMatchObject({
+      question_id: "question-1",
+      is_correct: true,
+      marks_awarded: 2,
+    });
+  });
+
+  it("returns the deterministic verdict when the response cannot be stored", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    const result = await sb.recordMcqResponse({
+      question_id: "question-2",
+      class_id: "class-1",
+      student_id: "student-1",
+      student_answer: "Nucleus",
+      correct: false,
+      marks: 1,
+      feedback: "The correct answer is: Ribosome",
+    });
+
+    expect(result).toMatchObject({
+      correct: false,
+      marks_awarded: 0,
+      source: "mcq",
+      recorded: false,
+      queued: false,
+      response_id: null,
+    });
   });
 });

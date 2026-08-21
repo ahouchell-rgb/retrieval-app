@@ -348,5 +348,26 @@ export const sb = (() => {
   const callPaperFeedforward = (payload) => callEdgeRoute(`/api/paper-feedforward`, payload);
   const callParsePaper = (payload) => callEdgeRoute(`/api/parse-paper-docx`, payload);
 
-  return { q, del, qAll, rpc, auth, submitAnswer, flushAnswers, pendingAnswers: () => readPending().length, loadBooklets, bookletFor, uploadToBucket, callPaperFeedforward, callParsePaper };
+  // MCQs are marked deterministically from the selected option index, so they do
+  // not need an AI request or marking-cache entry. Record the response directly
+  // and return the same verdict envelope as submitAnswer so Student.js can share
+  // all post-mark scheduling and progress bookkeeping.
+  const recordMcqResponse = async ({ question_id, class_id, student_id, student_answer, correct, marks, feedback }) => {
+    const marks_awarded = correct ? (marks || 1) : 0;
+    const verdict = { correct: !!correct, marks_awarded, feedback, flagged: false, source: "mcq" };
+    try {
+      const rows = await q("responses", { method: "POST", body: {
+        student_id, question_id, class_id, student_answer,
+        is_correct: !!correct, ai_feedback: feedback, marks_awarded,
+      } });
+      const row = Array.isArray(rows) ? rows[0] : rows;
+      return { ...verdict, recorded: true, response_id: row?.id ?? null };
+    } catch {
+      // The AI-answer offline queue cannot replay MCQs, so keep the deterministic
+      // verdict for the current session and report that persistence did not occur.
+      return { ...verdict, recorded: false, queued: false, response_id: null };
+    }
+  };
+
+  return { q, del, qAll, rpc, auth, submitAnswer, recordMcqResponse, flushAnswers, pendingAnswers: () => readPending().length, loadBooklets, bookletFor, uploadToBucket, callPaperFeedforward, callParsePaper };
 })();
