@@ -90,10 +90,19 @@ export function HodPanel({ user }) {
     if (flagBusy) return;
     setFlagBusy(flag.id);
     try {
-      if (decision === "overturned" && flag.response_id) {
-        const maxMarks = flag.questions?.marks ?? 1;
-        const newFeedback = `[OVERTURNED by HoD] ${flag.ai_feedback || ""}`.slice(0, 2000);
-        await sb.q("responses", { method: "PATCH", params: { id: `eq.${flag.response_id}` }, body: { is_correct: true, marks_awarded: maxMarks, ai_feedback: newFeedback } });
+      if (flag.response_id) {
+        const responsePatch = {
+          teacher_reviewed: true,
+          review_decision: decision === "overturned" ? "appeal_overturned" : "appeal_upheld",
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: user.id,
+        };
+        if (decision === "overturned") {
+          responsePatch.is_correct = true;
+          responsePatch.marks_awarded = flag.questions?.marks ?? 1;
+          responsePatch.ai_feedback = `[OVERTURNED by HoD] ${flag.ai_feedback || ""}`.slice(0, 2000);
+        }
+        await sb.q("responses", { method: "PATCH", params: { id: `eq.${flag.response_id}` }, body: responsePatch });
       }
       await sb.q("marking_flags", { method: "PATCH", params: { id: `eq.${flag.id}` }, body: {
         resolved: true, resolved_at: new Date().toISOString(), resolved_by: user.id,

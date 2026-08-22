@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { sb, SUPA_URL } from "../lib/supabase";
+import { fromLocalInputValue, toLocalInputValue } from "../lib/assignments";
 import { C } from "../lib/theme";
 import { PaperResults } from "./PaperResults";
 import { Btn, Card, Inp, Pill, TA } from "./ui";
@@ -225,9 +226,19 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
     if (isAssigned) {
       await sb.q("paper_class_assignments", { method: "DELETE", params: { paper_id: `eq.${paperId}`, class_id: `eq.${classId}` } });
     } else {
-      await sb.q("paper_class_assignments", { method: "POST", body: { paper_id: paperId, class_id: classId } });
+      await sb.q("paper_class_assignments", { method: "POST", body: { paper_id: paperId, class_id: classId, published: true, attempt_limit: 1 } });
     }
     await load();
+  };
+
+  const editAssignment = (classId, patch) => {
+    setAssignments(rows => rows.map(row => row.class_id === classId ? { ...row, ...patch } : row));
+  };
+
+  const saveAssignment = async (classId, patch) => {
+    try {
+      await sb.q("paper_class_assignments", { method: "PATCH", params: { paper_id: `eq.${paperId}`, class_id: `eq.${classId}` }, body: patch });
+    } catch (e) { alert("Could not save assignment settings: " + e.message); await load(); }
   };
 
   if (loading) return <div style={{ padding: 20, textAlign: "center", color: C.dim, fontSize: 12 }}>Loading…</div>;
@@ -328,17 +339,36 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
 
       {section === "assign" && (
         <Card style={{ padding: 14 }}>
-          <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, lineHeight: 1.5 }}>Tick the classes that should see this paper. Students in those classes will be able to take it from their dashboard.</div>
+          <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, lineHeight: 1.5 }}>Assign the paper, schedule its release, set the deadline and control how many attempts pupils get.</div>
           {classes.length === 0 ? <div style={{ fontSize: 12, color: C.dim }}>You don't have any classes yet.</div> :
             classes.map(c => {
-              const isAssigned = assignments.some(a => a.class_id === c.id);
+              const assignment = assignments.find(a => a.class_id === c.id);
+              const isAssigned = !!assignment;
               return (
-                <div key={c.id} onClick={() => toggleAssignment(c.id)}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, background: isAssigned ? C.priSoft : C.card2, border: `1px solid ${isAssigned ? C.pri + "55" : C.bdr}`, marginBottom: 6, cursor: "pointer" }}>
-                  <div style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${isAssigned ? C.pri : C.bdr}`, background: isAssigned ? C.pri : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700 }}>{isAssigned ? "✓" : ""}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: C.txt, fontWeight: 500 }}>{c.name}{c.year_group ? ` (Y${c.year_group})` : ""}</div>
-                  </div>
+                <div key={c.id} style={{ padding: "10px 12px", borderRadius: 8, background: isAssigned ? C.priSoft : C.card2, border: `1px solid ${isAssigned ? C.pri + "55" : C.bdr}`, marginBottom: 8 }}>
+                  <button onClick={() => toggleAssignment(c.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: 0, width: "100%", background: "none", border: "none", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}>
+                    <span style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${isAssigned ? C.pri : C.bdr}`, background: isAssigned ? C.pri : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 700 }}>{isAssigned ? "✓" : ""}</span>
+                    <span style={{ flex: 1, fontSize: 13, color: C.txt, fontWeight: 600 }}>{c.name}{c.year_group ? ` (Y${c.year_group})` : ""}</span>
+                    {isAssigned && <span style={{ fontSize: 10, color: assignment.published ? C.grn : C.dim }}>{assignment.published ? "Live" : "Draft"}</span>}
+                  </button>
+                  {assignment && (
+                    <div style={{ marginTop: 11, paddingTop: 11, borderTop: `1px solid ${C.bdrSoft}` }}>
+                      <textarea value={assignment.instructions || ""} rows={2} maxLength={2000} placeholder="Instructions for pupils (optional)"
+                        onChange={e => editAssignment(c.id, { instructions: e.target.value })}
+                        onBlur={e => saveAssignment(c.id, { instructions: e.target.value.trim() })}
+                        style={{ width: "100%", resize: "vertical", padding: "8px 9px", border: `1px solid ${C.bdr}`, borderRadius: 6, background: C.card, color: C.txt, fontSize: 11, fontFamily: "inherit", boxSizing: "border-box" }} />
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 92px", gap: 7, marginTop: 8 }}>
+                        <label style={assignmentLabel}>Release<input type="datetime-local" value={toLocalInputValue(assignment.available_from)} onChange={e => editAssignment(c.id, { available_from: fromLocalInputValue(e.target.value) })} onBlur={e => saveAssignment(c.id, { available_from: fromLocalInputValue(e.target.value) })} style={assignmentInput} /></label>
+                        <label style={assignmentLabel}>Due<input type="datetime-local" value={toLocalInputValue(assignment.due_at)} onChange={e => editAssignment(c.id, { due_at: fromLocalInputValue(e.target.value) })} onBlur={e => saveAssignment(c.id, { due_at: fromLocalInputValue(e.target.value) })} style={assignmentInput} /></label>
+                        <label style={assignmentLabel}>Closes<input type="datetime-local" value={toLocalInputValue(assignment.available_until)} onChange={e => editAssignment(c.id, { available_until: fromLocalInputValue(e.target.value) })} onBlur={e => saveAssignment(c.id, { available_until: fromLocalInputValue(e.target.value) })} style={assignmentInput} /></label>
+                        <label style={assignmentLabel}>Attempts<select value={assignment.attempt_limit || 1} onChange={e => { const value = Number(e.target.value); editAssignment(c.id, { attempt_limit: value }); saveAssignment(c.id, { attempt_limit: value }); }} style={assignmentInput}>{[1,2,3,4,5].map(n => <option key={n} value={n}>{n}</option>)}</select></label>
+                      </div>
+                      <label style={{ display: "flex", gap: 7, alignItems: "center", marginTop: 9, color: C.mid, fontSize: 11, cursor: "pointer" }}>
+                        <input type="checkbox" checked={!!assignment.published} onChange={e => { editAssignment(c.id, { published: e.target.checked }); saveAssignment(c.id, { published: e.target.checked }); }} />
+                        Published — pupils can see it once the release time arrives
+                      </label>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -463,5 +493,8 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
     </div>
   );
 }
+
+const assignmentLabel = { fontSize: 9, color: C.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".06em" };
+const assignmentInput = { display: "block", width: "100%", marginTop: 4, padding: "6px 7px", border: `1px solid ${C.bdr}`, borderRadius: 6, background: C.card, color: C.txt, fontSize: 10, fontFamily: "inherit", boxSizing: "border-box" };
 
 /* ─── PaperResults — per-student results table for a paper ─── */

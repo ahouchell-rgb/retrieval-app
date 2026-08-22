@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { Card, Kicker, Headline, Deck, Btn, Badge } from "./ui";
+import { MarkingQuality } from "./MarkingQuality";
 
 /* MarkReview — the marking-trust surface. AI marks every answer, but the teacher
  * stays in control: this queue shows the marks the model itself was UNSURE about
@@ -11,7 +12,7 @@ import { Card, Kicker, Headline, Deck, Btn, Badge } from "./ui";
  * confirms it, or overrides correct/incorrect. The override + "reviewed" flag use
  * the responses_update policy (teacher-of-class), so pupils can't touch their own.
  * Deterministic marks (high confidence) never enter the queue. */
-export function MarkReview({ cls }) {
+export function MarkReview({ cls, user }) {
   const [rows, setRows] = useState(null); // null = loading
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(null); // response id being saved
@@ -23,7 +24,7 @@ export function MarkReview({ cls }) {
       const resp = await sb.q("responses", { params: {
         class_id: `eq.${cls.id}`, ai_confidence: "in.(low,medium)", teacher_reviewed: "eq.false",
         order: "answered_at.desc", limit: "40",
-        select: "id,student_id,question_id,student_answer,is_correct,marks_awarded,ai_feedback,ai_confidence,answered_at",
+        select: "id,student_id,question_id,student_answer,is_correct,marks_awarded,original_is_correct,original_marks_awarded,ai_feedback,ai_confidence,answered_at",
       } });
       const list = Array.isArray(resp) ? resp : [];
       if (!list.length) { setRows([]); return; }
@@ -45,7 +46,15 @@ export function MarkReview({ cls }) {
   const resolve = async (row, body) => {
     setBusy(row.id);
     try {
-      await sb.q("responses", { method: "PATCH", params: { id: `eq.${row.id}` }, body: { ...body, teacher_reviewed: true } });
+      const nextCorrect = body.is_correct ?? row.is_correct;
+      const original = row.original_is_correct ?? row.is_correct;
+      await sb.q("responses", { method: "PATCH", params: { id: `eq.${row.id}` }, body: {
+        ...body,
+        teacher_reviewed: true,
+        review_decision: nextCorrect === original ? "accepted" : nextCorrect ? "override_correct" : "override_incorrect",
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: user.id,
+      } });
       setRows(prev => (prev || []).filter(r => r.id !== row.id));
     } catch (e) { setErr(e.message || "Could not save — check you teach this class"); }
     setBusy(null);
@@ -54,21 +63,21 @@ export function MarkReview({ cls }) {
   const setCorrect = (row, correct) => resolve(row, { is_correct: correct, marks_awarded: correct ? (row.q?.marks || 1) : 0 });
 
   if (rows === null) return (
-    <Card style={{ padding: 16, marginTop: 4 }}><div style={{ fontSize: 12, color: C.dim }}>Loading marks to review…</div></Card>
+    <><Card style={{ padding: 16, marginTop: 4 }}><div style={{ fontSize: 12, color: C.dim }}>Loading marks to review…</div></Card><MarkingQuality cls={cls} user={user} /></>
   );
 
   if (!rows.length) return (
-    <Card style={{ padding: "16px 18px", marginTop: 4, borderLeft: `3px solid ${C.grn}` }}>
+    <><Card style={{ padding: "16px 18px", marginTop: 4, borderLeft: `3px solid ${C.grn}` }}>
       <Kicker color={C.grn}>Review marks</Kicker>
       <Headline size={18} style={{ marginBottom: 2 }}>Nothing to review</Headline>
       <div style={{ fontSize: 13, color: C.mid }}>{err || "Every AI mark for this class was high-confidence, or you've reviewed them all. The queue surfaces only the marks the AI was unsure about."}</div>
-    </Card>
+    </Card><MarkingQuality cls={cls} user={user} /></>
   );
 
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) : "";
 
   return (
-    <Card style={{ padding: "18px 18px 14px", marginTop: 4, borderLeft: `3px solid ${C.amb}` }}>
+    <><Card style={{ padding: "18px 18px 14px", marginTop: 4, borderLeft: `3px solid ${C.amb}` }}>
       <Kicker color={C.amb}>Review marks · you're in control</Kicker>
       <Headline size={18} style={{ marginBottom: 2 }}>{rows.length} to check</Headline>
       <Deck style={{ marginBottom: 14 }}>The AI flagged these as borderline. Confirm its mark or override it — pupils only ever see the final mark.</Deck>
@@ -95,6 +104,6 @@ export function MarkReview({ cls }) {
           </div>
         ))}
       </div>
-    </Card>
+    </Card><MarkingQuality cls={cls} user={user} /></>
   );
 }

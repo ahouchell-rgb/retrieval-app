@@ -12,7 +12,7 @@ import { Card, Badge, Bar, Kicker, Headline, Deck, Btn } from "./ui";
  *
  * The view is security_invoker, so RLS on responses scopes it to this teacher's
  * own classes — we still pass class_id for the specific class on screen. */
-export function ClassGaps({ cls }) {
+export function ClassGaps({ cls, onAssign }) {
   const [rows, setRows] = useState(null); // null = loading, [] = none/loaded-empty
   const [err, setErr] = useState(null);
   const [building, setBuilding] = useState(false);
@@ -133,9 +133,12 @@ export function ClassGaps({ cls }) {
               <div style={{ marginTop: 5, fontSize: 10, color: C.dim, letterSpacing: ".02em" }}>{r.marked} marked · {r.students} pupil{r.students === 1 ? "" : "s"} · last {fmtDate(r.last_seen)}</div>
               {bk && <a href={bk.url} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 5, fontSize: 11, fontWeight: 600, color: C.pri, textDecoration: "none" }}>📖 Revise this topic ↗</a>}
             </div>
-            {unit
-              ? <Badge color={C.acc} style={{ flexShrink: 0 }}>{unit}</Badge>
-              : <span style={{ flexShrink: 0, fontSize: 9, color: C.dim, textTransform: "uppercase", letterSpacing: ".12em" }}>no unit</span>}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+              {unit
+                ? <Badge color={C.acc}>{unit}</Badge>
+                : <span style={{ fontSize: 9, color: C.dim, textTransform: "uppercase", letterSpacing: ".12em" }}>no unit</span>}
+              {onAssign && <button onClick={() => onAssign(r)} style={{ padding: 0, border: "none", background: "none", color: C.pri, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Assign practice →</button>}
+            </div>
           </div>
         );
       })}

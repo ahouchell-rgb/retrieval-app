@@ -8,6 +8,7 @@ import { C } from "../lib/theme";
 import { STAR_INTERVAL, WEEKLY_TARGET, getWeekBounds } from "../lib/week";
 import { MathInput } from "./MathInput";
 import { StudentPaperAttempt } from "./StudentPaperAttempt";
+import { TargetedAssignmentAttempt } from "./TargetedAssignmentAttempt";
 import { Badge, Btn, Card, Dateline, Deck, Headline, Inp, Kicker, Pill, TA } from "./ui";
 
 // Small inline icon for a revision resource link. Booklets/PDFs get a book;
@@ -31,6 +32,8 @@ export function Student({ user }) {
   const [paperBeingTaken, setPaperBeingTaken] = useState(null); // { id, mode, topic_id }
   const [assignedPapers, setAssignedPapers] = useState([]);     // papers attached to current class
   const [paperResponses, setPaperResponses] = useState([]);     // student's own paper answers (last 60 days)
+  const [targetedAssignments, setTargetedAssignments] = useState([]);
+  const [assignmentBeingTaken, setAssignmentBeingTaken] = useState(null);
   const [qs, setQs] = useState([]);
   const [qi, setQi] = useState(0);
   const [ans, setAns] = useState("");
@@ -260,6 +263,7 @@ export function Student({ user }) {
     setSessionHitTarget(false);
     setStudyMode(false);
     setStudyTopicId(null);
+    setAssignmentBeingTaken(null);
     setSessionQCount(0);
     setFlagMsg("");
     try {
@@ -273,7 +277,7 @@ export function Student({ user }) {
       setRecency(recencyBoost);
 
       const questions = await sb.q("questions", { params: { topic_id: `in.(${tids.join(",")})`, archived: "eq.false", select: "*,topics(name)" } });
-      const resps = await sb.q("responses", { params: { student_id: `eq.${user.id}`, class_id: `eq.${c.id}`, select: "question_id,is_correct,student_answer,answered_at", order: "answered_at.desc" } });
+      const resps = await sb.q("responses", { params: { student_id: `eq.${user.id}`, class_id: `eq.${c.id}`, select: "question_id,is_correct,student_answer,answered_at,assignment_id", order: "answered_at.desc" } });
 
       const srMap = {};
       const byQ = {};
@@ -326,7 +330,7 @@ export function Student({ user }) {
       let paperResps = [];
       try {
         const [pcas, pAttempts] = await Promise.all([
-          sb.q("paper_class_assignments", { params: { class_id: `eq.${c.id}`, select: "paper_id,papers(id,name,total_marks,exam_board,paper_year,paper_number,archived)" } }),
+          sb.q("paper_class_assignments", { params: { class_id: `eq.${c.id}`, select: "paper_id,instructions,available_from,due_at,available_until,attempt_limit,published,papers(id,name,total_marks,exam_board,paper_year,paper_number,archived)" } }),
           sb.q("paper_attempts", { params: { student_id: `eq.${user.id}`, class_id: `eq.${c.id}`, mode: `eq.full`, select: "id,paper_id,submitted_at,awarded_marks,total_marks,started_at", order: "started_at.desc" } }),
         ]);
         if (pAttempts && pAttempts.length > 0) {
@@ -356,15 +360,37 @@ export function Student({ user }) {
             : null;
         });
         const ps = (pcas || [])
-          .map(a => a.papers)
-          .filter(p => p && !p.archived)
-          .map(p => {
+          .filter(a => a.papers && !a.papers.archived)
+          .map(a => {
+            const p = a.papers;
             const g = byPaper[p.id] || { all: [], submitted: [], latest: null, latestSubmitted: null };
-            return { ...p, latest: g.latest, latestSubmitted: g.latestSubmitted, submittedCount: g.submitted.length };
+            return { ...p, ...a, papers: undefined, latest: g.latest, latestSubmitted: g.latestSubmitted, submittedCount: g.submitted.length };
           });
         setAssignedPapers(ps);
         setPaperResponses(paperResps);
       } catch (e) { console.error("paper load failed", e); setPaperResponses([]); }
+
+      // Targeted work is a thin layer over the same retrieval questions and
+      // response rows, so it counts towards the weekly target automatically.
+      try {
+        const links = await sb.q("retrieval_assignment_students", { params: {
+          student_id: `eq.${user.id}`, select: "assignment_id,completed_at,baseline_pct,assigned_at", order: "assigned_at.desc",
+        } });
+        const assignmentIds = (links || []).map(link => link.assignment_id);
+        if (!assignmentIds.length) setTargetedAssignments([]);
+        else {
+          const [work, questionLinks] = await Promise.all([
+            sb.q("retrieval_assignments", { params: { id: `in.(${assignmentIds.join(",")})`, class_id: `eq.${c.id}`, select: "*", order: "created_at.desc" } }),
+            sb.q("retrieval_assignment_questions", { params: { assignment_id: `in.(${assignmentIds.join(",")})`, select: "assignment_id,question_id" } }),
+          ]);
+          const linkMap = new Map((links || []).map(link => [link.assignment_id, link]));
+          setTargetedAssignments((work || []).map(item => {
+            const required = new Set((questionLinks || []).filter(link => link.assignment_id === item.id).map(link => link.question_id));
+            const done = new Set(resps.filter(response => response.assignment_id === item.id).map(response => response.question_id));
+            return { ...item, ...linkMap.get(item.id), answered: done.size, total: required.size };
+          }));
+        }
+      } catch (e) { console.error("targeted assignment load failed", e); setTargetedAssignments([]); }
 
       const thisWeek = getWeekBounds(0);
       const thisWeekResps = resps.filter(r => { const d = new Date(r.answered_at); return d >= thisWeek.start && d <= thisWeek.end; });
@@ -656,6 +682,14 @@ export function Student({ user }) {
       }} />;
   }
 
+  if (assignmentBeingTaken && cls) {
+    return <TargetedAssignmentAttempt assignment={assignmentBeingTaken} user={user} cls={cls}
+      onExit={async () => {
+        setAssignmentBeingTaken(null);
+        if (cls) await pickClass(cls);
+      }} />;
+  }
+
   return (
     <div style={{ padding: "16px 16px 60px", maxWidth: 620, margin: "0 auto" }}>
       {/* Star pop animation */}
@@ -943,6 +977,23 @@ export function Student({ user }) {
         </Card>
       )}
 
+      {targetedAssignments.length > 0 && (
+        <Card style={{ padding: 12, marginBottom: 12, borderLeft: `3px solid ${C.pri}` }}>
+          <div style={{ fontSize: 11, color: C.dim, textTransform: "uppercase", letterSpacing: 0.4, fontWeight: 700, marginBottom: 8 }}>Targeted practice from your teacher</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {targetedAssignments.map(item => {
+              const complete = !!item.completed_at || (item.total > 0 && item.answered >= item.total);
+              const overdue = !complete && item.due_at && new Date(item.due_at) < new Date();
+              return <button key={item.id} onClick={() => { if (!complete) setAssignmentBeingTaken(item); }} disabled={complete}
+                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", borderRadius: 8, border: `1px solid ${complete ? C.bdr : overdue ? C.red + "55" : C.pri + "45"}`, background: complete ? C.card2 : overdue ? C.redS : C.priSoft, textAlign: "left", cursor: complete ? "default" : "pointer", fontFamily: "inherit" }}>
+                <span style={{ flex: 1, minWidth: 0 }}><span style={{ display: "block", fontSize: 13, color: C.txt, fontWeight: 700 }}>{item.title}</span><span style={{ display: "block", fontSize: 10, color: C.dim, marginTop: 3 }}>{item.answered}/{item.total || item.question_count} answered{item.due_at ? ` · due ${new Date(item.due_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : ""}</span></span>
+                <Badge color={complete ? C.grn : overdue ? C.red : C.pri}>{complete ? "Complete" : overdue ? "Late · resume" : item.answered ? "Resume →" : "Start →"}</Badge>
+              </button>;
+            })}
+          </div>
+        </Card>
+      )}
+
       {/* ── Assigned papers ── (Option B: just below the weekly target, before stats)
            Compact card listing exam-style papers the teacher has assigned to this class.
            Tapping a paper enters paper-attempt mode (full take). Hidden if no papers. */}
@@ -953,21 +1004,26 @@ export function Student({ user }) {
             {assignedPapers.map(p => {
               const inProgress = p.latest && !p.latest.submitted_at;
               const submitted = !inProgress && p.latestSubmitted;
+              const attemptLimit = p.attempt_limit || 1;
+              const canRetake = p.submittedCount < attemptLimit;
+              const complete = !!submitted && !canRetake;
               const pct = submitted ? Math.round(((p.latestSubmitted.awarded_marks ?? 0) / Math.max(1, p.latestSubmitted.total_marks ?? p.total_marks)) * 100) : 0;
               const meta = [p.exam_board, p.paper_year, p.paper_number].filter(Boolean).join(" · ");
+              const due = p.due_at ? `Due ${new Date(p.due_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : null;
               const onRowClick = () => {
                 if (inProgress) setPaperBeingTaken({ id: p.id });
-                else if (submitted) setPaperBeingTaken({ id: p.id, retake: true });
+                else if (submitted && canRetake) setPaperBeingTaken({ id: p.id, retake: true });
                 else setPaperBeingTaken({ id: p.id });
               };
               return (
-                <div key={p.id} onClick={onRowClick}
-                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, background: submitted && !inProgress ? C.card2 : C.priSoft, border: `1px solid ${submitted && !inProgress ? C.bdr : C.pri + "40"}`, cursor: "pointer" }}>
+                <div key={p.id} onClick={complete ? undefined : onRowClick}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, background: submitted && !inProgress ? C.card2 : C.priSoft, border: `1px solid ${submitted && !inProgress ? C.bdr : C.pri + "40"}`, cursor: complete ? "default" : "pointer" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: C.txt }}>{p.name}</div>
                     <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>
-                      {[meta, `${p.total_marks} marks`, p.submittedCount > 1 ? `${p.submittedCount} attempts` : null].filter(Boolean).join(" · ")}
+                      {[meta, `${p.total_marks} marks`, due, `${p.submittedCount}/${attemptLimit} attempts`].filter(Boolean).join(" · ")}
                     </div>
+                    {p.instructions && <div style={{ fontSize: 10, color: C.mid, marginTop: 4, lineHeight: 1.4 }}>{p.instructions}</div>}
                   </div>
                   {submitted && !inProgress && (
                     <div style={{ textAlign: "right" }}>
@@ -977,8 +1033,10 @@ export function Student({ user }) {
                   )}
                   {inProgress ? (
                     <div style={{ fontSize: 11, padding: "4px 10px", borderRadius: 99, background: C.amb, color: "#fff", fontWeight: 600 }}>Resume →</div>
-                  ) : submitted ? (
+                  ) : submitted && canRetake ? (
                     <div style={{ fontSize: 11, padding: "4px 10px", borderRadius: 99, background: C.pri, color: "#fff", fontWeight: 600 }}>Retake →</div>
+                  ) : submitted ? (
+                    <div style={{ fontSize: 11, padding: "4px 10px", borderRadius: 99, background: C.grn, color: "#fff", fontWeight: 600 }}>Complete</div>
                   ) : (
                     <div style={{ fontSize: 11, padding: "4px 10px", borderRadius: 99, background: C.pri, color: "#fff", fontWeight: 600 }}>Start →</div>
                   )}

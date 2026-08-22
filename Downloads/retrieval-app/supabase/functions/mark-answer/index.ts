@@ -304,6 +304,33 @@ async function getAuthedUid(req: Request): Promise<string | null> {
   }
 }
 
+// When an answer belongs to targeted practice, verify the pupil, class and
+// question are all part of that published assignment. A forged assignment_id
+// must never be able to create false completion evidence.
+async function validateAssignment(
+  assignment_id: string | null,
+  uid: string,
+  class_id: string,
+  question_id: string,
+): Promise<boolean> {
+  if (!assignment_id) return true;
+  if (!sb) return false;
+  const [assignment, pupil, question] = await Promise.all([
+    sb.from("retrieval_assignments")
+      .select("id,class_id,status,available_from")
+      .eq("id", assignment_id).eq("class_id", class_id).single(),
+    sb.from("retrieval_assignment_students")
+      .select("student_id")
+      .eq("assignment_id", assignment_id).eq("student_id", uid).limit(1),
+    sb.from("retrieval_assignment_questions")
+      .select("question_id")
+      .eq("assignment_id", assignment_id).eq("question_id", question_id).limit(1),
+  ]);
+  if (assignment.error || !assignment.data || assignment.data.status !== "published") return false;
+  if (assignment.data.available_from && new Date(assignment.data.available_from) > new Date()) return false;
+  return !!pupil.data?.length && !!question.data?.length;
+}
+
 // Write the marked response server-side (service role), but ONLY for the
 // authenticated pupil and ONLY in a class they belong to. This is what makes the
 // grade authoritative: the stored is_correct / marks_awarded come from here, not
@@ -317,6 +344,7 @@ async function recordResponse(
   verdict: { correct: boolean; marks_awarded: number; feedback: string; flagged: boolean; confidence?: string },
   request_id: string,
   marking_source: string,
+  assignment_id: string | null,
 ): Promise<string | null> {
   if (!sb || !uid || !question_id || !class_id) return null;
   try {
@@ -340,6 +368,11 @@ async function recordResponse(
         ai_confidence: verdict.confidence ?? null,
         request_id,
         marking_source,
+        assignment_id,
+        original_is_correct: verdict.correct,
+        original_marks_awarded: verdict.marks_awarded,
+        marker_model: marking_source.startsWith("ai") ? MODEL : null,
+        rubric_version: 1,
       })
       .select("id")
       .single();
@@ -348,6 +381,26 @@ async function recordResponse(
   } catch (e) {
     console.error("response insert failed:", e);
     return null;
+  }
+}
+
+async function refreshAssignmentCompletion(assignment_id: string | null, uid: string) {
+  if (!sb || !assignment_id) return;
+  try {
+    const [assigned, marked] = await Promise.all([
+      sb.from("retrieval_assignment_questions").select("question_id").eq("assignment_id", assignment_id),
+      sb.from("responses").select("question_id").eq("assignment_id", assignment_id).eq("student_id", uid),
+    ]);
+    if (assigned.error || marked.error || !assigned.data?.length) return;
+    const required = new Set(assigned.data.map(row => row.question_id)).size;
+    const completed = new Set((marked.data || []).map(row => row.question_id)).size;
+    if (completed >= required) {
+      await sb.from("retrieval_assignment_students")
+        .update({ completed_at: new Date().toISOString() })
+        .eq("assignment_id", assignment_id).eq("student_id", uid).is("completed_at", null);
+    }
+  } catch (e) {
+    console.error("assignment completion update failed:", e);
   }
 }
 
@@ -389,6 +442,7 @@ Deno.serve(async (req: Request) => {
     const body = await req.json();
     const question_id = String(body?.question_id || "");
     const class_id = String(body?.class_id || "");
+    const assignment_id = body?.assignment_id ? String(body.assignment_id) : null;
     if (!question_id || !class_id) return json({ error: "question_id and class_id are required" }, 400);
 
     // The authenticated endpoint is the paid, authoritative marking path. Public
@@ -402,6 +456,9 @@ Deno.serve(async (req: Request) => {
     ]);
     if (membership.error || !membership.data?.length) return json({ error: "Not enrolled in this class." }, 403);
     if (questionRow.error || !questionRow.data || questionRow.data.archived) return json({ error: "Question not available." }, 404);
+    if (!await validateAssignment(assignment_id, uid, class_id, question_id)) {
+      return json({ error: "This question is not available in that assignment." }, 403);
+    }
 
     // Question text, model answer and marks are DB-authoritative. Besides grade
     // integrity, this bounds prompt size so a pupil cannot inflate provider cost.
@@ -541,7 +598,9 @@ Deno.serve(async (req: Request) => {
     // ── Record server-side (authenticated pupil, their own class only) ──
     // Never persist a backstop "verdict" as a grade — it isn't one.
     const response_id = verdict.source === "cap_backstop" ? null
-      : await recordResponse(uid, question_id, class_id, student_answer, verdict, requestId, verdict.source);
+      : await recordResponse(uid, question_id, class_id, student_answer, verdict, requestId, verdict.source, assignment_id);
+
+    if (response_id && assignment_id) await refreshAssignmentCompletion(assignment_id, uid);
 
     const isShortcut = ["numerical_match", "exact_match", "cache", "client_flagged", "mcq"].includes(verdict.source);
     if (isShortcut) {

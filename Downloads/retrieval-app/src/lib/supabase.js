@@ -346,10 +346,10 @@ export const sb = (() => {
 
   // MCQs are marked deterministically from the selected option index by the same
   // authoritative edge route, so no AI call or marking-cache entry is needed.
-  const recordMcqResponse = async ({ question_id, class_id, student_id, student_answer, selected_index, correct, marks, feedback }) => {
+  const recordMcqResponse = async ({ question_id, class_id, student_id, student_answer, selected_index, correct, marks, feedback, assignment_id = null }) => {
     const marks_awarded = correct ? (marks || 1) : 0;
     const verdict = { correct: !!correct, marks_awarded, feedback, flagged: false, source: "mcq" };
-    const body = { question_id, class_id, student_id, student_answer, selected_index, request_id: newRequestId() };
+    const body = { question_id, class_id, student_id, student_answer, selected_index, assignment_id, request_id: newRequestId() };
     try {
       const d = await callMarkAnswer(body);
       const authoritative = {

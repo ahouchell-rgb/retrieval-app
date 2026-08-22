@@ -6,6 +6,7 @@ import { isHoD, isModerator } from "../lib/roles";
 import { planAllows } from "../lib/plans";
 import { STAR_INTERVAL, WEEKLY_TARGET, getWeekBounds } from "../lib/week";
 import { AdminPanel } from "./AdminPanel";
+import { AssignmentsPanel } from "./AssignmentsPanel";
 import { BulkUpload } from "./BulkUpload";
 import { ClassGaps } from "./ClassGaps";
 import { Misconceptions } from "./Misconceptions";
@@ -55,6 +56,9 @@ export function Teacher({ user }) {
   const [expandedFlag, setExpandedFlag] = useState(null); // flag_id being reviewed
   const [flagNote, setFlagNote] = useState(""); // teacher's optional note on the active review
   const [flagBusy, setFlagBusy] = useState(null); // flag_id currently being saved
+  const [assignmentSeed, setAssignmentSeed] = useState(null);
+  const [queueNotice, setQueueNotice] = useState("");
+  const [starterTopicId, setStarterTopicId] = useState("");
   // Onboarding panel: persists dismissal in localStorage so it never re-shows once closed.
   // Keyed per-user so a different teacher on the same browser sees their own state.
   const onboardingKey = `onboarding_dismissed_${user.id}`;
@@ -72,16 +76,27 @@ export function Teacher({ user }) {
     if (!cls || flagBusy) return;
     setFlagBusy(flag.id);
     try {
-      if (decision === "overturned" && flag.response_id) {
-        // Update the original response: mark it correct and award full marks.
-        // Prepend [OVERTURNED] to feedback so it's visible to the student.
-        const maxMarks = flag.questions?.marks ?? 1;
-        const prevFeedback = flag.ai_feedback || "";
-        const newFeedback = `[OVERTURNED by teacher] ${prevFeedback}`.slice(0, 2000);
+      if (flag.response_id) {
+        const reviewedAt = new Date().toISOString();
+        const responsePatch = {
+          teacher_reviewed: true,
+          review_decision: decision === "overturned" ? "appeal_overturned" : "appeal_upheld",
+          reviewed_at: reviewedAt,
+          reviewed_by: user.id,
+        };
+        if (decision === "overturned") {
+          // Update the original response: mark it correct and award full marks.
+          // Prepend [OVERTURNED] to feedback so it's visible to the student.
+          const maxMarks = flag.questions?.marks ?? 1;
+          const prevFeedback = flag.ai_feedback || "";
+          responsePatch.is_correct = true;
+          responsePatch.marks_awarded = maxMarks;
+          responsePatch.ai_feedback = `[OVERTURNED by teacher] ${prevFeedback}`.slice(0, 2000);
+        }
         await sb.q("responses", {
           method: "PATCH",
           params: { id: `eq.${flag.response_id}` },
-          body: { is_correct: true, marks_awarded: maxMarks, ai_feedback: newFeedback },
+          body: responsePatch,
         });
       }
       await sb.q("marking_flags", {
@@ -178,8 +193,9 @@ export function Teacher({ user }) {
           mis[k].n++; if (mis[k].ans.length < 3) mis[k].ans.push(r.student_answer);
         }
         if (r.questions?.topics?.name) {
-          const t = r.questions.topics.name;
-          if (!tp[t]) tp[t] = { t: 0, c: 0 }; tp[t].t++; if (r.is_correct) tp[t].c++;
+          const topicId = r.questions.topic_id || r.questions.topics.name;
+          if (!tp[topicId]) tp[topicId] = { id: r.questions.topic_id || null, name: r.questions.topics.name, t: 0, c: 0 };
+          tp[topicId].t++; if (r.is_correct) tp[topicId].c++;
         }
       });
 
@@ -279,7 +295,7 @@ export function Teacher({ user }) {
           return { id, ...d, weekStars: Math.floor(over / STAR_INTERVAL) };
         }),
         mis: Object.values(mis).sort((a, b) => b.n - a.n).slice(0, 10),
-        tp: Object.entries(tp).map(([name, d]) => ({ name, ...d, pct: d.t ? Math.round(d.c / d.t * 100) : 0 })).sort((a, b) => a.pct - b.pct),
+        tp: Object.values(tp).map(d => ({ ...d, pct: d.t ? Math.round(d.c / d.t * 100) : 0 })).sort((a, b) => a.pct - b.pct),
         mems: mems.length,
         flags,
       });
@@ -372,6 +388,17 @@ export function Teacher({ user }) {
       setParentTokens(p => ({ ...p, [studentId]: newToken.token }));
       return newToken.token;
     } catch (e) { console.error(e); return null; }
+  };
+
+  const openAssignment = ({ topicId = "", studentIds = [], title = "", source = "attention_queue" } = {}) => {
+    setAssignmentSeed({ topicId, studentIds, title, source, nonce: Date.now() });
+    setTab("assignments");
+  };
+
+  const copyPracticeNudge = async (studentName) => {
+    const text = `Hi ${studentName}, please complete your retrieval practice for ${cls?.name || "your class"} this week.`;
+    try { await navigator.clipboard.writeText(text); setQueueNotice(`Nudge copied for ${studentName}.`); }
+    catch { setQueueNotice(text); }
   };
 
   const revokeParentToken = async (studentId) => {
@@ -585,7 +612,7 @@ export function Teacher({ user }) {
           <Btn v="ghost" onClick={() => setSetup("class")} style={{ padding: "10px 14px", fontSize: 13, whiteSpace: "nowrap" }}>+ New</Btn>
         </div>
         <div style={{ display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2, justifyContent: "flex-end" }}>
-          {[...(showDept ? ["hod"] : []), ...["dashboard", "review", "starter", "topics", "questions", "papers"], ...(isMod ? ["admin"] : [])].map(t => <Pill key={t} on={tab === t} onClick={() => setTab(t)} style={t === "admin" ? { borderColor: C.pri, color: tab === t ? C.pri : C.pri } : (t === "hod" ? { borderColor: C.amb, color: tab === t ? C.amb : C.amb } : undefined)}>{t === "starter" ? "Lesson Starter" : t === "admin" ? "Admin" : t === "hod" ? "Department" : t === "papers" ? "Papers" : t === "review" ? "Review marks" : t.charAt(0).toUpperCase() + t.slice(1)}</Pill>)}
+          {[...(showDept ? ["hod"] : []), ...["dashboard", "assignments", "review", "starter", "topics", "questions", "papers"], ...(isMod ? ["admin"] : [])].map(t => <Pill key={t} on={tab === t} onClick={() => setTab(t)} style={t === "admin" ? { borderColor: C.pri, color: tab === t ? C.pri : C.pri } : (t === "hod" ? { borderColor: C.amb, color: tab === t ? C.amb : C.amb } : undefined)}>{t === "starter" ? "Lesson Starter" : t === "admin" ? "Admin" : t === "hod" ? "Department" : t === "papers" ? "Papers" : t === "review" ? "Review marks" : t.charAt(0).toUpperCase() + t.slice(1)}</Pill>)}
         </div>
       </div>
 
@@ -747,10 +774,16 @@ export function Teacher({ user }) {
                   ...atRisk.slice(0, 3).map(s => {
                     const lastActive = s.weeklyHistory?.findIndex(w => w.valid > 0);
                     const weeksAgo = (lastActive === -1 || lastActive === undefined) ? "Never active" : lastActive === 0 ? "This week" : `${lastActive}w ago`;
-                    return { key: `risk-${s.id}`, tone: C.red, label: "Nudge", title: `${s.name} needs a practice nudge`, detail: `Last active: ${weeksAgo}` };
+                    return { key: `risk-${s.id}`, tone: C.red, title: `${s.name} needs a practice nudge`, detail: `Last active: ${weeksAgo}`, actions: [
+                      { label: "Copy nudge", run: () => copyPracticeNudge(s.name) },
+                      ...(weakestTopic?.id ? [{ label: "Assign", run: () => openAssignment({ topicId: weakestTopic.id, studentIds: [s.id], title: `${weakestTopic.name} — catch-up`, source: "attention_queue" }) }] : []),
+                    ] };
                   }),
-                  ...(dash.flags || []).slice(0, 2).map(f => ({ key: `flag-${f.id}`, tone: C.amb, label: "Review", title: `${f.profiles?.display_name || "Student"} appealed a mark`, detail: f.questions?.question_text || "Open marking flag" })),
-                  ...(weakestTopic ? [{ key: "weakest", tone: C.blue, label: "Teach next", title: `${weakestTopic.name} is the weakest topic`, detail: `${weakestTopic.pct}% accuracy across ${weakestTopic.t} answers` }] : []),
+                  ...(dash.flags || []).slice(0, 2).map(f => ({ key: `flag-${f.id}`, tone: C.amb, title: `${f.profiles?.display_name || "Student"} appealed a mark`, detail: f.questions?.question_text || "Open marking flag", actions: [{ label: "Review", run: () => { setExpandedFlag(f.id); setTimeout(() => document.getElementById(`marking-flag-${f.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0); } }] })),
+                  ...(weakestTopic ? [{ key: "weakest", tone: C.blue, title: `${weakestTopic.name} is the weakest topic`, detail: `${weakestTopic.pct}% accuracy across ${weakestTopic.t} answers`, actions: [
+                    ...(weakestTopic.id ? [{ label: "Assign", run: () => openAssignment({ topicId: weakestTopic.id, title: `${weakestTopic.name} — targeted practice`, source: "class_gap" }) }] : []),
+                    { label: "Starter", run: () => { setStarterTopicId(weakestTopic.id || ""); setTab("starter"); } },
+                  ] }] : []),
                 ].slice(0, 4);
                 return (
                   <Card style={{ marginBottom: 16, overflow: "hidden", borderColor: "#cdd6df" }}>
@@ -763,6 +796,7 @@ export function Teacher({ user }) {
                         <Deck style={{ maxWidth: 620 }}>
                           Start with the queue, then use the deeper analytics below only when you need the evidence.
                         </Deck>
+                        {queueNotice && <div style={{ marginTop: 10, fontSize: 12, color: C.grn, fontWeight: 700 }}>{queueNotice}</div>}
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 18 }}>
                           {[
                             { l: "This week", n: pd.total, c: C.txt, h: "answers" },
@@ -789,7 +823,9 @@ export function Teacher({ user }) {
                               <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</span>
                               <span style={{ display: "block", fontSize: 12, color: "#bdc8d4", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.detail}</span>
                             </span>
-                            <span style={{ fontSize: 11, fontWeight: 800, color: "#fff", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>{item.label}</span>
+                            <span style={{ display: "flex", gap: 5, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                              {(item.actions || []).map(action => <button key={action.label} onClick={action.run} style={{ fontSize: 11, fontWeight: 800, color: "#fff", background: "transparent", border: "1px solid rgba(255,255,255,0.24)", borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit" }}>{action.label}</button>)}
+                            </span>
                           </div>
                         ))}
                       </div>
@@ -821,7 +857,7 @@ export function Teacher({ user }) {
                       const qText = f.questions?.question_text || "(question missing)";
                       const maxMarks = f.questions?.marks ?? 1;
                       return (
-                        <div key={f.id} style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 4 }}>
+                        <div id={`marking-flag-${f.id}`} key={f.id} style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 4 }}>
                           {/* Row header — always visible */}
                           <button
                             onClick={() => { setExpandedFlag(isOpen ? null : f.id); setFlagNote(""); }}
@@ -939,7 +975,7 @@ export function Teacher({ user }) {
               </div>
 
               {/* Class gaps — weakest objectives from the mastery spine, mapped to planning units */}
-              <ClassGaps cls={cls} />
+              <ClassGaps cls={cls} onAssign={(gap) => openAssignment({ topicId: gap.topic_id, title: `${gap.topic_name} — targeted practice`, source: "class_gap" })} />
 
               {/* Misconceptions — the specific faulty ideas behind the wrong answers, + one-click targeted reteach */}
               <Misconceptions cls={cls} userId={user.id} />
@@ -1229,10 +1265,12 @@ export function Teacher({ user }) {
             </div>
           )}
 
-          {tab === "review" && cls && <MarkReview cls={cls} />}
+          {tab === "assignments" && cls && <AssignmentsPanel user={user} cls={cls} topics={topics} seed={assignmentSeed} onConsumed={() => setAssignmentSeed(null)} />}
+
+          {tab === "review" && cls && <MarkReview cls={cls} user={user} />}
 
           {tab === "starter" && (
-            <LessonStarter topics={topics} unlocked={unlocked} cls={cls} dash={dash} />
+            <LessonStarter topics={topics} unlocked={unlocked} cls={cls} dash={dash} initialTopicId={starterTopicId} onInitialTopicConsumed={() => setStarterTopicId("")} />
           )}
 
           {tab === "topics" && (

@@ -1,6 +1,7 @@
 node_modules/
 .next/
 out/
+supabase/.temp/
 
 # Secrets: ignore every .env* variant (incl. renamed copies like ".env.migrate copy.txt")
 # so connection strings can't be committed; keep the documented template.

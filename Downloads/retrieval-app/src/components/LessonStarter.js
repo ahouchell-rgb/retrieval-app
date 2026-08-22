@@ -1,10 +1,10 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { Badge, Btn, Card, Headline, Kicker, Pill } from "./ui";
 
-export function LessonStarter({ topics, unlocked, cls, dash }) {
+export function LessonStarter({ topics, unlocked, cls, dash, initialTopicId = "", onInitialTopicConsumed }) {
   const [numQs, setNumQs] = useState(5);
   const [lastTopic, setLastTopic] = useState("");
   const [lastTopicQs, setLastTopicQs] = useState([]); // all questions for selected topic
@@ -35,6 +35,13 @@ export function LessonStarter({ topics, unlocked, cls, dash }) {
       setSelectedLastQs(new Set(qs.map(q => q.id)));
     } catch (e) { console.error("Failed to load questions:", e); setLastTopicQs([]); }
   };
+
+  useEffect(() => {
+    if (!initialTopicId || !unlocked.has(initialTopicId)) return;
+    selectLastTopic(initialTopicId);
+    onInitialTopicConsumed?.();
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [initialTopicId]);
 
   const toggleLastQ = (qId) => {
     setSelectedLastQs(prev => {

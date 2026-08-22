@@ -10,6 +10,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
   const [paper, setPaper] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [attempt, setAttempt] = useState(null);
+  const [assignment, setAssignment] = useState(null);
   const [responses, setResponses] = useState({}); // paper_question_id -> response row
   const [qi, setQi] = useState(0);
   const [ans, setAns] = useState("");
@@ -18,17 +19,21 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
   const [loading, setLoading] = useState(true);
   const [showFinish, setShowFinish] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [loadError, setLoadError] = useState("");
   const submissionLockRef = useRef(false);
 
   useEffect(() => { (async () => {
     setLoading(true);
     try {
-      const [p, qs] = await Promise.all([
+      setLoadError("");
+      const [p, qs, assignmentRows] = await Promise.all([
         sb.q("papers", { params: { id: `eq.${paperId}`, select: "*,subjects(marker_profile)" } }),
         sb.q("paper_questions", { params: { paper_id: `eq.${paperId}`, select: "*", order: "sort_order.asc" } }),
+        sb.q("paper_class_assignments", { params: { paper_id: `eq.${paperId}`, class_id: `eq.${cls.id}`, select: "instructions,due_at,attempt_limit" } }),
       ]);
       if (!p[0] || !qs?.length) { setLoading(false); return; }
       setPaper(p[0]); setQuestions(qs);
+      setAssignment(assignmentRows?.[0] || null);
 
       // Find or create an attempt.
       // If forceNewAttempt is set (retake), always create fresh.
@@ -38,13 +43,16 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
       const existing = await sb.q("paper_attempts", { params: {
         paper_id: `eq.${paperId}`, student_id: `eq.${user.id}`, class_id: `eq.${cls.id}`,
         mode: "eq.full",
-        select: "*", order: "started_at.desc", limit: "1"
+        select: "*", order: "started_at.desc"
       }});
       let att;
       const canResume = !forceNewAttempt && existing?.length && !existing[0].submitted_at;
       if (canResume) {
         att = existing[0];
       } else {
+        const submittedCount = (existing || []).filter(row => row.submitted_at).length;
+        const attemptLimit = assignmentRows?.[0]?.attempt_limit || 1;
+        if (submittedCount >= attemptLimit) throw new Error("You have used all the attempts your teacher allowed for this paper.");
         const [created] = await sb.q("paper_attempts", { method: "POST", body: {
           paper_id: paperId, student_id: user.id, class_id: cls.id, mode: "full",
           total_marks: p[0].total_marks,
@@ -61,9 +69,9 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
       // Resume at first unanswered question
       const firstUnanswered = qs.findIndex(q => !rmap[q.id]);
       setQi(firstUnanswered === -1 ? qs.length - 1 : firstUnanswered);
-    } catch (e) { console.error("paper attempt load failed", e); }
+    } catch (e) { console.error("paper attempt load failed", e); setLoadError(e.message || "This paper could not be opened."); }
     setLoading(false);
-  })(); }, [paperId, cls.id, user.id]);
+  })(); }, [paperId, cls.id, user.id, forceNewAttempt]);
 
   const currentQ = questions[qi];
   const existingResp = currentQ ? responses[currentQ.id] : null;
@@ -148,6 +156,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
   };
 
   if (loading) return <div style={{ padding: 40, textAlign: "center", color: C.dim, fontSize: 13 }}>Loading paper…</div>;
+  if (loadError) return <div style={{ padding: 40, textAlign: "center" }}><div style={{ fontSize: 13, color: C.txt, marginBottom: 12 }}>{loadError}</div><Btn onClick={onExit}>Back</Btn></div>;
   if (!paper || questions.length === 0) {
     return (
       <div style={{ padding: 40, textAlign: "center" }}>
@@ -238,6 +247,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
       </div>
 
       {/* Progress */}
+      {assignment?.instructions && <Card style={{ padding: "10px 12px", marginBottom: 12, fontSize: 11, color: C.mid, lineHeight: 1.5 }}>{assignment.instructions}</Card>}
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 600, letterSpacing: ".14em", textTransform: "uppercase", color: C.mid, marginBottom: 6 }}>
           <span>Question <span style={{ color: C.pri }}>{String(qi + 1).padStart(2, "0")}</span> of {String(questions.length).padStart(2, "0")}</span>
