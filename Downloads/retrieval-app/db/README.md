@@ -47,7 +47,8 @@ psql "$DATABASE_URL" -f db/migrations/<file>.sql
 | `20260621_05_blended_objective_mastery.sql` | APPLIED (2026-06-21) | Phase 2 (blend): `pupil_objective_mastery` view (per class×pupil×objective, blends retrieval + past-paper into one mark-weighted %, security_invoker) + `class_objective_breakdown(p_class_id[,p_unit_id[,p_limit]])` RPC (class rollup per objective, blended + retrieval/paper split, identity-gated + secret). The per-pupil × per-objective mastery node. Requires the objective tables (`20260621_01` + feynman `mastery_graph_objectives`). |
 | `20260821_01_cost_controls_and_ai_usage_metadata.sql` | APPLIED (2026-08-21) | Adds end-to-end AI telemetry fields; server-only marking idempotency claims; request IDs on response rows; hash caches for question generation, misconception mining, paper parsing and feedforward; model-aware cost summary. |
 | `20260821_02_idempotency_stale_claim_recovery.sql` | APPLIED (2026-08-21) | Lets a retry reclaim a marking request abandoned by a terminated worker after five minutes, while preserving normal replay coalescing. |
-| `20260822_01_teacher_assignment_intervention_loop.sql` | PENDING | Adds targeted retrieval assignments and measurable pupil outcomes; marking provenance/review audit fields; scheduled paper instructions, deadlines and attempt limits; supporting RLS, grants and integrity triggers. Deploy with the matching web and `mark-answer` changes. |
+| `20260822_01_teacher_assignment_intervention_loop.sql` | APPLIED (2026-08-23) | Adds targeted retrieval assignments and measurable pupil outcomes; marking provenance/review audit fields; scheduled paper instructions, deadlines and attempt limits; supporting RLS, grants and integrity triggers. |
+| `20260823_01_restrict_intervention_rpc.sql` | APPLIED (2026-08-23) | Restores `class_intervention_list` to authenticated/service-only execution after the advisor caught an inherited anonymous grant. |
 
 ## Replaying on a fresh database
 

@@ -1,4 +1,4 @@
--- STATUS: PENDING — deploy with the matching web + mark-answer changes.
+-- STATUS: APPLIED to project uvzukwoxqhcxaxtzrziy on 2026-08-23.
 -- Teacher action loop: targeted retrieval assignments, measurable intervention
 -- outcomes, paper scheduling, and marking-quality provenance.
 
