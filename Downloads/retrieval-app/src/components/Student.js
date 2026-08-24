@@ -1,15 +1,18 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
+import Image from "next/image";
 import { detectFakeAnswer } from "../lib/marking";
 import { getSRInfo, sortQuestions } from "../lib/questions";
 import { nextSR } from "../lib/sr";
 import { sb } from "../lib/supabase";
+import { buildMasterySummary, buildSessionBreakdown, effectiveWeeklyTarget, questionReason, safeLearningFeedback, SESSION_LENGTHS, sortStudentTasks, summariseClassProgress } from "../lib/studentExperience";
 import { C } from "../lib/theme";
-import { STAR_INTERVAL, WEEKLY_TARGET, getWeekBounds } from "../lib/week";
+import { STAR_INTERVAL, getWeekBounds } from "../lib/week";
 import { MathInput } from "./MathInput";
+import { StudentHome } from "./StudentHome";
 import { StudentPaperAttempt } from "./StudentPaperAttempt";
 import { TargetedAssignmentAttempt } from "./TargetedAssignmentAttempt";
-import { Badge, Btn, Card, Dateline, Deck, Headline, Inp, Kicker, Pill, TA } from "./ui";
+import { Badge, Btn, Card, Dateline, Deck, Headline, Pill, Skeleton, TA } from "./ui";
 
 // Small inline icon for a revision resource link. Booklets/PDFs get a book;
 // interactive tools/widgets get a "spark" so the two read differently at a glance.
@@ -28,6 +31,10 @@ export function Student({ user }) {
   const SHOW_GAMIFICATION = false;
   const [classes, setClasses] = useState([]);
   const [cls, setCls] = useState(null);
+  const [home, setHome] = useState({ loading: true, error: "", classSummaries: [], tasks: [], reviews: [] });
+  const [seenReviewIds, setSeenReviewIds] = useState(new Set());
+  const [showPrefs, setShowPrefs] = useState(false);
+  const [prefs, setPrefs] = useState({ largeText: false, readingMode: false, reduceMotion: false });
   // Paper-taking state — when set, the page swaps to the paper attempt view
   const [paperBeingTaken, setPaperBeingTaken] = useState(null); // { id, mode, topic_id }
   const [assignedPapers, setAssignedPapers] = useState([]);     // papers attached to current class
@@ -61,6 +68,7 @@ export function Student({ user }) {
   const [showWeeks, setShowWeeks] = useState(false);
   const [starPop, setStarPop] = useState(false);
   const [topicStats, setTopicStats] = useState([]); // [{topicId, name, t, c, notStarted}]
+  const [mastery, setMastery] = useState({ secure: 0, due: 0, recentPct: null, previousPct: null, change: null, strengthened: [] });
   const [showTopics, setShowTopics] = useState(false);
   const [topicResources, setTopicResources] = useState({}); // topicId → [{kind,title,url,sort_order}] from interactive-science.com
   const [statView, setStatView] = useState("allTime"); // "allTime" | "thisWeek"
@@ -72,7 +80,7 @@ export function Student({ user }) {
   // Session-level "wrong answer cooldown" — maps questionId -> how many MORE questions must be answered before this one can resurface.
   // Prevents the same wrong question cycling back within seconds. Resets on reload (in-memory only).
   const [cooldown, setCooldown] = useState(new Map());
-  const COOLDOWN_LENGTH = 12; // answer 12 other questions before a wrong one can return
+  const COOLDOWN_LENGTH = 4; // resurface a missed question later in the same session, never immediately
   // Session progress counter (resets on class pick or Back)
   const [sessionQCount, setSessionQCount] = useState(0);
   // Per-session target that drives the progress bar — remainder of weekly target, min 5, max 15
@@ -83,6 +91,9 @@ export function Student({ user }) {
   const [flagBusy, setFlagBusy] = useState(false);
   const [flagMsg, setFlagMsg] = useState("");
   const [lastResponseId, setLastResponseId] = useState(null);
+  // One supported correction after a wrong answer. The model answer stays hidden
+  // until the pupil retries or explicitly asks to reveal it.
+  const [learningStep, setLearningStep] = useState(null); // null | { phase, originalAnswer, firstResult }
   // 7-day habit visual: [{ date, label, count }]
   const [habitDays, setHabitDays] = useState([]);
   // Review mistakes mode: filters qs to those student has recently got wrong
@@ -101,6 +112,26 @@ export function Student({ user }) {
   const submissionLockRef = useRef(false);
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(`student.preferences.${user.id}`) || "null");
+      if (stored) setPrefs(current => ({ ...current, ...stored }));
+      const seen = JSON.parse(window.localStorage.getItem(`student.reviewSeen.${user.id}`) || "[]");
+      setSeenReviewIds(new Set(Array.isArray(seen) ? seen : []));
+    } catch { /* preferences remain at accessible defaults */ }
+  }, [user.id]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("student-large-text", prefs.largeText);
+    root.classList.toggle("student-reading-mode", prefs.readingMode);
+    root.classList.toggle("student-reduced-motion", prefs.reduceMotion);
+    try { window.localStorage.setItem(`student.preferences.${user.id}`, JSON.stringify(prefs)); } catch {}
+    return () => {
+      root.classList.remove("student-large-text", "student-reading-mode", "student-reduced-motion");
+    };
+  }, [prefs, user.id]);
 
   // ── Daily streak ──────────────────────────────────────────────────────────
   // Computed from habitDays. The streak is the count of consecutive days, ending
@@ -212,15 +243,120 @@ export function Student({ user }) {
     }
   };
 
+  const loadStudentHome = async (classRows) => {
+    if (!classRows.length) {
+      setHome({ loading: false, error: "", classSummaries: [], tasks: [], reviews: [] });
+      return;
+    }
+    setHome(current => ({ ...current, loading: true, error: "" }));
+    try {
+      const classIds = classRows.map(item => item.id);
+      const eightWeeksAgo = getWeekBounds(7).start.toISOString();
+      const [recentResponses, assignmentLinks, paperAssignments, paperAttempts, flags] = await Promise.all([
+        sb.qAll("responses", { params: { student_id: `eq.${user.id}`, class_id: `in.(${classIds.join(",")})`, answered_at: `gte.${eightWeeksAgo}`, select: "id,class_id,question_id,assignment_id,is_correct,student_answer,marks_awarded,answered_at,teacher_reviewed,review_decision,reviewed_at", order: "answered_at.desc,id.desc" } }),
+        sb.q("retrieval_assignment_students", { params: { student_id: `eq.${user.id}`, select: "assignment_id,completed_at,baseline_pct,assigned_at", order: "assigned_at.desc" } }),
+        sb.q("paper_class_assignments", { params: { class_id: `in.(${classIds.join(",")})`, select: "paper_id,class_id,instructions,due_at,attempt_limit,published,papers(id,name,total_marks,exam_board,paper_year,paper_number,archived)" } }),
+        sb.q("paper_attempts", { params: { student_id: `eq.${user.id}`, class_id: `in.(${classIds.join(",")})`, mode: "eq.full", select: "id,paper_id,class_id,submitted_at,started_at,awarded_marks,total_marks", order: "started_at.desc" } }),
+        sb.q("marking_flags", { params: { student_id: `eq.${user.id}`, resolved: "eq.true", select: "id,response_id,class_id,question_id,teacher_decision,teacher_notes,resolved_at,created_at", order: "resolved_at.desc", limit: "20" } }),
+      ]);
+
+      const assignmentIds = [...new Set((assignmentLinks || []).map(item => item.assignment_id).filter(Boolean))];
+      const attemptIds = (paperAttempts || []).map(item => item.id);
+      const reviewQuestionIds = [...new Set([
+        ...(flags || []).map(item => item.question_id),
+        ...(recentResponses || []).filter(item => item.teacher_reviewed && item.reviewed_at).map(item => item.question_id),
+      ].filter(Boolean))];
+      const [assignments, assignmentQuestions, assignmentResponses, rawPaperResponses, reviewQuestions] = await Promise.all([
+        assignmentIds.length ? sb.q("retrieval_assignments", { params: { id: `in.(${assignmentIds.join(",")})`, select: "*", order: "created_at.desc" } }) : [],
+        assignmentIds.length ? sb.q("retrieval_assignment_questions", { params: { assignment_id: `in.(${assignmentIds.join(",")})`, select: "assignment_id,question_id" } }) : [],
+        assignmentIds.length ? sb.qAll("responses", { params: { student_id: `eq.${user.id}`, assignment_id: `in.(${assignmentIds.join(",")})`, select: "id,assignment_id,question_id,is_correct,answered_at" } }) : [],
+        attemptIds.length ? sb.qAll("paper_responses", { params: { attempt_id: `in.(${attemptIds.join(",")})`, answered_at: `gte.${eightWeeksAgo}`, flagged: "eq.false", select: "attempt_id,answered_at,marks_awarded" } }) : [],
+        reviewQuestionIds.length ? sb.q("questions", { params: { id: `in.(${reviewQuestionIds.join(",")})`, select: "id,question_text" } }) : [],
+      ]);
+
+      const classById = new Map(classRows.map(item => [item.id, item]));
+      const attemptById = new Map((paperAttempts || []).map(item => [item.id, item]));
+      const paperResponses = (rawPaperResponses || []).map(item => ({ ...item, class_id: attemptById.get(item.attempt_id)?.class_id }));
+      const classSummaries = summariseClassProgress(classRows, recentResponses || [], paperResponses);
+      const assignmentLinkById = new Map((assignmentLinks || []).map(item => [item.assignment_id, item]));
+      const tasks = [];
+
+      (assignments || []).forEach(assignment => {
+        const link = assignmentLinkById.get(assignment.id);
+        if (!link) return;
+        const required = new Set((assignmentQuestions || []).filter(item => item.assignment_id === assignment.id).map(item => item.question_id));
+        const done = new Set((assignmentResponses || []).filter(item => item.assignment_id === assignment.id).map(item => item.question_id));
+        const total = required.size || assignment.question_count || 0;
+        if (link.completed_at || (total > 0 && done.size >= total)) return;
+        const payload = { ...assignment, ...link, answered: done.size, total };
+        tasks.push({ kind: "assignment", id: assignment.id, title: assignment.title, classId: assignment.class_id, className: classById.get(assignment.class_id)?.name || "Class", dueAt: assignment.due_at, answered: done.size, total, inProgress: done.size > 0, payload });
+      });
+
+      const attemptsByPaper = new Map();
+      (paperAttempts || []).forEach(attempt => {
+        if (!attemptsByPaper.has(attempt.paper_id)) attemptsByPaper.set(attempt.paper_id, []);
+        attemptsByPaper.get(attempt.paper_id).push(attempt);
+      });
+      (paperAssignments || []).forEach(assignment => {
+        const paper = assignment.papers;
+        if (!paper || paper.archived || !assignment.published) return;
+        const attempts = attemptsByPaper.get(paper.id) || [];
+        const inProgress = attempts.find(item => !item.submitted_at);
+        const submittedCount = attempts.filter(item => item.submitted_at).length;
+        // A completed paper with optional retakes is not presented as unfinished work.
+        if (!inProgress && submittedCount > 0) return;
+        const payload = { ...paper, ...assignment, papers: undefined };
+        tasks.push({ kind: "paper", id: paper.id, title: paper.name, classId: assignment.class_id, className: classById.get(assignment.class_id)?.name || "Class", dueAt: assignment.due_at, inProgress: !!inProgress, payload });
+      });
+
+      const questionById = new Map((reviewQuestions || []).map(item => [item.id, item.question_text]));
+      const flagResponseIds = new Set((flags || []).map(item => item.response_id).filter(Boolean));
+      const reviews = [
+        ...(flags || []).map(flag => ({
+          id: `flag-${flag.id}`,
+          classId: flag.class_id,
+          className: classById.get(flag.class_id)?.name || "Class",
+          question: questionById.get(flag.question_id) || "A reported answer",
+          note: flag.teacher_notes || "Your teacher has checked the mark you reported.",
+          overturned: flag.teacher_decision === "overturned",
+          reviewedAt: flag.resolved_at || flag.created_at,
+        })),
+        ...(recentResponses || []).filter(response => response.teacher_reviewed && response.reviewed_at && !flagResponseIds.has(response.id)).map(response => ({
+          id: `response-${response.id}`,
+          classId: response.class_id,
+          className: classById.get(response.class_id)?.name || "Class",
+          question: questionById.get(response.question_id) || "A recent answer",
+          note: response.review_decision?.startsWith("override") ? "Your teacher adjusted the original AI mark." : "Your teacher checked and confirmed this mark.",
+          overturned: response.review_decision === "override_correct" || response.review_decision === "appeal_overturned",
+          reviewedAt: response.reviewed_at,
+        })),
+      ].sort((a, b) => new Date(b.reviewedAt) - new Date(a.reviewedAt));
+
+      setHome({ loading: false, error: "", classSummaries, tasks: sortStudentTasks(tasks), reviews });
+    } catch (error) {
+      console.error("student home load failed", error);
+      setHome(current => ({ ...current, loading: false, error: error.message || "Your classes are still available, but the latest plan could not be loaded." }));
+    }
+  };
+
   const load = async () => {
     try {
-      const mems = await sb.q("class_members", { params: { student_id: `eq.${user.id}`, select: "class_id" } });
+      const mems = await sb.q("class_members", { params: { student_id: `eq.${user.id}`, select: "class_id,weekly_target_override" } });
       if (mems.length) {
         const ids = mems.map(m => m.class_id);
         const c = await sb.q("classes", { params: { id: `in.(${ids.join(",")})`, select: "*,subjects(name,marker_profile)" } });
-        setClasses(c);
+        const overrideByClass = new Map(mems.map(item => [item.class_id, item.weekly_target_override]));
+        const rows = c.map(item => ({ ...item, weekly_target_override: overrideByClass.get(item.id) ?? null }));
+        setClasses(rows);
+        await loadStudentHome(rows);
+      } else {
+        setClasses([]);
+        await loadStudentHome([]);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+      setHome(current => ({ ...current, loading: false, error: e.message || "Could not load your classes." }));
+    }
     setLoading(false);
   };
 
@@ -238,7 +374,9 @@ export function Student({ user }) {
       // Now enrolled, so classes_select lets us read the full row for the UI.
       let full = joined;
       try { full = await sb.q("classes", { params: { id: `eq.${joined.id}`, select: "*,subjects(name,marker_profile)" }, single: true }); } catch { /* fall back to id+name */ }
-      setClasses(p => p.some(x => x.id === joined.id) ? p : [...p, full]);
+      const nextClasses = classes.some(x => x.id === joined.id) ? classes : [...classes, full];
+      setClasses(nextClasses);
+      await loadStudentHome(nextClasses);
       setJoinCode("");
     } catch (e) { setJoinErr(e.message); }
     setJoining(false);
@@ -256,7 +394,7 @@ export function Student({ user }) {
     } catch (e) { setCreateErr(e.message || "Could not create the school"); setCreatingSchool(false); }
   };
 
-  const pickClass = async (c) => {
+  const pickClass = async (c, launch = null) => {
     setCls(c);
     setSessionStats({ t: 0, c: 0, topics: [], struggles: [] });
     setShowSummary(false);
@@ -266,9 +404,14 @@ export function Student({ user }) {
     setAssignmentBeingTaken(null);
     setSessionQCount(0);
     setFlagMsg("");
+    setLearningStep(null);
     try {
       const ul = await sb.q("class_topics", { params: { class_id: `eq.${c.id}`, select: "topic_id,recency_rank" } });
-      if (!ul.length) { setQs([]); return; }
+      if (!ul.length) {
+        setQs([]);
+        if (launch?.kind === "paper") setPaperBeingTaken({ id: launch.id });
+        return;
+      }
       const tids = ul.map(t => t.topic_id);
 
       // Build recency boost map: topicId → rank (1=most recent, 2, 3)
@@ -301,7 +444,9 @@ export function Student({ user }) {
       });
       const attempted = Object.values(tAcc).filter(t => t.t > 0).sort((a, b) => (a.c/a.t) - (b.c/b.t));
       const notStarted = Object.values(tAcc).filter(t => t.t === 0).length;
-      setTopicStats([...attempted, ...(notStarted > 0 ? [{ name: `${notStarted} topic${notStarted !== 1 ? "s" : ""} not yet started`, t: 0, c: 0, isPlaceholder: true }] : [])]);
+      const nextTopicStats = [...attempted, ...(notStarted > 0 ? [{ name: `${notStarted} topic${notStarted !== 1 ? "s" : ""} not yet started`, t: 0, c: 0, isPlaceholder: true }] : [])];
+      setTopicStats(nextTopicStats);
+      setMastery(buildMasterySummary(questions, resps, srMap));
 
       // Topic-level revision resources (interactive-science.com tools/widgets/booklets),
       // keyed by topic id — powers the "revise your weak spots" panel below.
@@ -402,7 +547,8 @@ export function Student({ user }) {
       }).length;
       setWeeklyValid(validThisWeek + paperWeekCount);
       // Session target: how many questions to aim for in this session — remainder of weekly target, clamped 5-15
-      const remaining = Math.max(0, WEEKLY_TARGET - (validThisWeek + paperWeekCount));
+      const target = effectiveWeeklyTarget(c);
+      const remaining = Math.max(0, target - (validThisWeek + paperWeekCount));
       setSessionTarget(Math.max(5, Math.min(15, remaining || 10)));
 
       const weeks = [];
@@ -416,9 +562,9 @@ export function Student({ user }) {
         const correctPaper = weekPaper.filter(r => (r.marks_awarded || 0) > 0).length;
         const valid = validRetrieval + validPaper;
         const correct = correctRetrieval + correctPaper;
-        const overTarget = Math.max(0, valid - WEEKLY_TARGET);
+        const overTarget = Math.max(0, valid - target);
         const stars = Math.floor(overTarget / STAR_INTERVAL);
-        weeks.push({ weekStart: bounds.start, label: w === 0 ? "This week" : w === 1 ? "Last week" : `${w} weeks ago`, total: weekResps.length + weekPaper.length, valid, correct, stars, metTarget: valid >= WEEKLY_TARGET });
+        weeks.push({ weekStart: bounds.start, label: w === 0 ? "This week" : w === 1 ? "Last week" : `${w} weeks ago`, total: weekResps.length + weekPaper.length, valid, correct, stars, metTarget: valid >= target });
       }
       setWeeklyData(weeks);
 
@@ -445,6 +591,8 @@ export function Student({ user }) {
       // Session starts at intro screen
       setSessionStarted(false);
       setReviewMode(false);
+      if (launch?.kind === "assignment") setAssignmentBeingTaken(launch.payload);
+      if (launch?.kind === "paper") setPaperBeingTaken({ id: launch.id });
     } catch (e) { console.error(e); }
   };
 
@@ -452,12 +600,37 @@ export function Student({ user }) {
     ? qs.filter(q => mistakeQIds.has(q.id))
     : (studyMode && studyTopicId ? qs.filter(q => q.topic_id === studyTopicId) : qs);
 
+  const draftQuestion = currentActiveQs()[qi];
+  const draftKey = draftQuestion && cls ? `student.answerDraft.${user.id}.${cls.id}.${draftQuestion.id}` : null;
+  useEffect(() => {
+    if (!draftKey || res) return;
+    try { setAns(window.localStorage.getItem(draftKey) || ""); } catch { setAns(""); }
+  }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const updateAnswer = value => {
+    setAns(value);
+    if (!draftKey) return;
+    try {
+      if (value) window.localStorage.setItem(draftKey, value);
+      else window.localStorage.removeItem(draftKey);
+    } catch {}
+  };
+  const clearAnswerDraft = () => {
+    if (!draftKey) return;
+    try { window.localStorage.removeItem(draftKey); } catch {}
+  };
+
+  const selectedTarget = effectiveWeeklyTarget(cls);
+
   // Shared post-mark bookkeeping for BOTH free-text (AI) and MCQ (deterministic)
   // marking: SR scheduling, streak, session cooldown, weekly/session stats and the
   // target milestones. `answerText` is what the student gave (typed, or the chosen
   // option) so the struggles log is accurate for either path.
-  const applyVerdict = (q, answerText, r) => {
+  const applyVerdict = (q, answerText, r, { isRetry = false } = {}) => {
     setRes(r);
+    clearAnswerDraft();
+    if (!r.correct && !r.flagged && !isRetry) setLearningStep({ phase: "prompt", originalAnswer: answerText, firstResult: r });
+    else if (isRetry) setLearningStep(previous => ({ ...(previous || {}), phase: "complete", retryAnswer: answerText, retryCorrect: !!r.correct }));
+    else setLearningStep(null);
     const prev = sr[q.id] || {};
     const nxt = nextSR(r.correct, prev);
     setSr(s => ({ ...s, [q.id]: nxt }));
@@ -478,12 +651,12 @@ export function Student({ user }) {
           ? [...prev2.struggles, { question: q.question_text, studentAnswer: answerText, modelAnswer: q.model_answer, topic: topicName }]
           : prev2.struggles,
       }));
-      const overTarget = newValid - WEEKLY_TARGET;
+      const overTarget = newValid - selectedTarget;
       if (overTarget > 0 && overTarget % STAR_INTERVAL === 0) {
         setStarPop(true);
         setTimeout(() => setStarPop(false), 2000);
       }
-      if (newValid === WEEKLY_TARGET && !sessionHitTarget) {
+      if (newValid === selectedTarget && !sessionHitTarget) {
         setSessionHitTarget(true);
         setTimeout(() => setShowSummary(true), 600);
       }
@@ -505,7 +678,7 @@ export function Student({ user }) {
     // server-side, so the grade can't be forged client-side. It still returns a
     // verdict for the UI and queues itself if the network is down.
     const r = await sb.submitAnswer({ question: q.question_text, model_answer: q.model_answer, student_answer: ans, marks: q.marks, question_id: q.id, class_id: cls.id, student_id: user.id, skipFakeCheck: cls?.subjects?.marker_profile === "maths" });
-    applyVerdict(q, ans, r);
+    applyVerdict(q, ans, r, { isRetry: learningStep?.phase === "editing" });
   };
 
   // Multiple choice: the student taps an option. The server checks the index
@@ -518,12 +691,19 @@ export function Student({ user }) {
     const chosen = (q.options || [])[idx] ?? "";
     setAns(chosen);
     const correct = idx === q.correct_index;
-    const feedback = correct
-      ? "Correct!"
-      : `The correct answer is: ${(q.options || [])[q.correct_index] ?? q.model_answer}`;
+    const feedback = correct ? "Correct!" : "Not quite. Compare the wording of each option and try once more.";
     const r = await sb.recordMcqResponse({ question_id: q.id, class_id: cls.id, student_id: user.id, student_answer: chosen, selected_index: idx, correct, marks: q.marks, feedback });
-    applyVerdict(q, chosen, r);
+    applyVerdict(q, chosen, r, { isRetry: learningStep?.phase === "editing" });
   };
+
+  const startAnswerRetry = () => {
+    setLearningStep(previous => ({ ...(previous || {}), phase: "editing" }));
+    setRes(null);
+    updateAnswer(learningStep?.originalAnswer || "");
+    submissionLockRef.current = false;
+  };
+
+  const revealModelAnswer = () => setLearningStep(previous => ({ ...(previous || {}), phase: "complete", revealed: true }));
 
   const next = () => {
     stopMicIfActive();
@@ -538,7 +718,7 @@ export function Student({ user }) {
       setQs(prevQs => sortQuestions(prevQs, sr, recency, new Set(nextCooldown.keys())));
       return nextCooldown;
     });
-    setQi(0); setAns(""); setRes(null);
+    setQi(0); setAns(""); setRes(null); setLearningStep(null);
     submissionLockRef.current = false;
     setFlagging(false); setFlagReason(""); setFlagMsg(""); setLastResponseId(null);
   };
@@ -568,65 +748,38 @@ export function Student({ user }) {
     setFlagBusy(false);
   };
 
-  if (loading) return <div style={{ color: C.mid, padding: 40, textAlign: "center" }}>Loading...</div>;
+  const markReviewRead = id => {
+    setSeenReviewIds(previous => {
+      const next = new Set(previous); next.add(id);
+      try { window.localStorage.setItem(`student.reviewSeen.${user.id}`, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+
+  const openHomeTask = async task => {
+    const targetClass = classes.find(item => item.id === task.classId);
+    if (targetClass) await pickClass(targetClass, task);
+  };
+
+  const returnHome = async () => {
+    setCls(null);
+    setPaperBeingTaken(null);
+    setAssignmentBeingTaken(null);
+    await loadStudentHome(classes);
+  };
+
+  if (loading) return <main className="student-shell student-home" aria-label="Loading your learning"><Card style={{ padding: 22 }}><Skeleton width="35%" height={14} /><Skeleton width="72%" height={34} style={{ marginTop: 13 }} /><Skeleton height={96} style={{ marginTop: 18 }} /></Card></main>;
 
   /* ── Class select + join ── */
-  if (!cls) return (
-    <div style={{ padding: 16, maxWidth: 500, margin: "0 auto" }}>
-      <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, marginBottom: 16 }}>Your Classes</div>
-
-      {/* Join a class */}
-      <Card style={{ padding: 16, marginBottom: 16 }}>
-        <div style={{ color: C.txt, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Join a class</div>
-        <div style={{ color: C.dim, fontSize: 12, marginBottom: 10 }}>Enter the code your teacher gave you</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <Inp placeholder="e.g. X7K3NP" value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())}
-            style={{ letterSpacing: 3, fontWeight: 700, fontSize: 18, textAlign: "center", textTransform: "uppercase" }}
-            maxLength={6} onKeyDown={e => e.key === "Enter" && joinClass()} />
-          <Btn onClick={joinClass} disabled={!joinCode.trim() || joining} style={{ whiteSpace: "nowrap" }}>{joining ? "..." : "Join"}</Btn>
-        </div>
-        {joinErr && <div style={{ color: C.red, fontSize: 13, marginTop: 8, padding: "8px 10px", background: C.redS, borderRadius: 8 }}>{joinErr}</div>}
-      </Card>
-
-      {/* Self-serve onboarding — only for a fresh, unaffiliated account */}
-      {classes.length === 0 && !user?.profile?.school_id && (
-        <Card style={{ padding: 16, marginBottom: 16, background: C.card2 }}>
-          {!showStart ? (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <div style={{ fontSize: 13, color: C.mid }}>A teacher setting up your school?</div>
-              <Btn v="ghost" onClick={() => setShowStart(true)} style={{ fontSize: 12, whiteSpace: "nowrap" }}>Start a school</Btn>
-            </div>
-          ) : (
-            <div>
-              <div style={{ color: C.txt, fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Set up your school</div>
-              <div style={{ color: C.dim, fontSize: 12, marginBottom: 10 }}>You'll become the lead for a new free trial — then create classes and share join codes with pupils.</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Inp placeholder="School name" value={schoolName} onChange={e => setSchoolName(e.target.value)} onKeyDown={e => e.key === "Enter" && startSchool()} />
-                <Btn onClick={startSchool} disabled={!schoolName.trim() || creatingSchool} style={{ whiteSpace: "nowrap" }}>{creatingSchool ? "..." : "Create"}</Btn>
-              </div>
-              {createErr && <div style={{ color: C.red, fontSize: 13, marginTop: 8, padding: "8px 10px", background: C.redS, borderRadius: 8 }}>{createErr}</div>}
-            </div>
-          )}
-        </Card>
-      )}
-
-      {classes.length === 0 ? (
-        <Card style={{ padding: "32px 20px", textAlign: "center" }}>
-          <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={C.dim} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg></div>
-          <div style={{ color: C.mid, fontSize: 14 }}>No classes yet</div>
-          <div style={{ color: C.dim, fontSize: 13, marginTop: 4 }}>Use a join code from your teacher above</div>
-        </Card>
-      ) : classes.map(c => (
-        <Card key={c.id} onClick={() => pickClass(c)} style={{ padding: 16, marginBottom: 8, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ color: C.txt, fontWeight: 600, fontSize: 15 }}>{c.name}</div>
-            <div style={{ color: C.dim, fontSize: 12, marginTop: 2 }}>{c.subjects?.name || "Science"}{c.year_group ? ` · Y${c.year_group}` : ""}</div>
-          </div>
-          <div style={{ color: C.pri, fontSize: 20 }}>›</div>
-        </Card>
-      ))}
-    </div>
-  );
+  if (!cls) return <StudentHome
+    user={user} classes={classes} home={home} onRetry={() => loadStudentHome(classes)}
+    onPickClass={pickClass} onOpenTask={openHomeTask}
+    joinCode={joinCode} onJoinCode={setJoinCode} onJoin={joinClass} joining={joining} joinErr={joinErr}
+    showStart={showStart} onShowStart={setShowStart} schoolName={schoolName} onSchoolName={setSchoolName}
+    onStartSchool={startSchool} creatingSchool={creatingSchool} createErr={createErr}
+    prefs={prefs} onPrefs={setPrefs} showPrefs={showPrefs} onShowPrefs={setShowPrefs}
+    seenReviewIds={seenReviewIds} onMarkReviewRead={markReviewRead}
+  />;
 
   /* ── Quiz ── */
   const activeQs = reviewMode
@@ -637,26 +790,23 @@ export function Student({ user }) {
   // live preview). Keyed off the subject's marker_profile — the same field the
   // server resolves to pick the maths marking overlay, so input and marking agree.
   const isMaths = cls?.subjects?.marker_profile === "maths";
-  // Derived session breakdown for the intro screen
-  const introBreakdown = (() => {
-    const upcoming = activeQs.slice(0, sessionTarget);
-    let fresh = 0, review = 0;
-    upcoming.forEach(uq => {
-      const st = sr[uq.id];
-      if (!st || !st.reps) fresh++; else review++;
-    });
-    return { fresh, review, total: upcoming.length };
-  })();
-  const estimatedMinutes = Math.max(1, Math.round(introBreakdown.total * 0.7));
+  // Explain the adaptive mix in pupil language: every upcoming question belongs
+  // to exactly one bucket so the session preview is honest and easy to scan.
+  const introBreakdown = buildSessionBreakdown(activeQs, sr, topicStats, sessionTarget);
+  const estimatedMinutes = introBreakdown.estimatedMinutes;
   const acc = stats.t > 0 ? Math.round(stats.c / stats.t * 100) : 0;
   const isDue = !sr[q?.id] || !sr[q?.id]?.due || new Date(sr[q?.id].due) <= new Date();
-  const weekPct = Math.min(100, Math.round((weeklyValid / WEEKLY_TARGET) * 100));
-  const overTarget = Math.max(0, weeklyValid - WEEKLY_TARGET);
+  const weekPct = Math.min(100, Math.round((weeklyValid / selectedTarget) * 100));
+  const overTarget = Math.max(0, weeklyValid - selectedTarget);
   const currentStars = Math.floor(overTarget / STAR_INTERVAL);
   // Topics available for study mode (derived from all questions)
   const studyTopics = [...new Map(qs.map(q => [q.topic_id, q.topics?.name || "Unknown"])).entries()]
     .map(([id, name]) => ({ id, name, count: qs.filter(qq => qq.topic_id === id).length }))
     .sort((a, b) => a.name.localeCompare(b.name));
+  const whyThisQuestion = questionReason(q, sr, topicStats);
+  const visibleFeedback = !res?.correct && learningStep?.phase === "prompt"
+    ? safeLearningFeedback(res?.feedback, q?.model_answer, q?.kind)
+    : (res?.feedback || (res?.correct ? "That includes the key idea." : "Use the clue below and improve one part of your answer."));
 
   // The pupil's own weak spots: their weakest *attempted* topics (topicStats is
   // already sorted weakest-first) that have a mapped revision resource. This is
@@ -691,7 +841,7 @@ export function Student({ user }) {
   }
 
   return (
-    <div style={{ padding: "16px 16px 60px", maxWidth: 620, margin: "0 auto" }}>
+    <main className="student-shell student-practice" style={{ padding: "16px 16px 60px", maxWidth: 680, margin: "0 auto" }}>
       {/* Star pop animation */}
       {SHOW_GAMIFICATION && starPop && (
         <div style={{ position: "fixed", top: 20, right: 20, zIndex: 999, animation: "starPop 2s ease forwards", fontSize: 48, pointerEvents: "none" }}>⭐</div>
@@ -702,7 +852,7 @@ export function Student({ user }) {
 
       {/* Back nav + class chip */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 8 }}>
-        <button onClick={() => setCls(null)} style={{ background: "none", border: "none", color: C.mid, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>← All classes</button>
+        <button onClick={returnHome} style={{ background: "none", border: "none", color: C.mid, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>← Learning home</button>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
           {SHOW_GAMIFICATION && correctStreak >= 3 && <Badge color={C.amb}>{correctStreak} in a row</Badge>}
           {SHOW_GAMIFICATION && currentStars > 0 && <Badge color={C.amb}>★ {currentStars}</Badge>}
@@ -715,7 +865,7 @@ export function Student({ user }) {
                 setStudyMode(false); setStudyTopicId(null);
                 setRes(null); setAns(""); setQi(0);
                 if (turningOn) setSessionTarget(Math.min(10, mistakeQIds.size));
-                else setSessionTarget(Math.max(5, Math.min(15, Math.max(0, WEEKLY_TARGET - weeklyValid) || 10)));
+                else setSessionTarget(Math.max(5, Math.min(15, Math.max(0, selectedTarget - weeklyValid) || 10)));
                 setSessionStarted(false); setSessionQCount(0);
               }}
               style={{ background: reviewMode ? C.redSoft : C.card, border: `1px solid ${reviewMode ? C.red : C.bdr}`, borderRadius: 999, color: reviewMode ? C.red : C.mid, fontSize: 11, cursor: "pointer", fontFamily: "inherit", padding: "5px 11px", fontWeight: 700 }}>
@@ -732,16 +882,16 @@ export function Student({ user }) {
           <div>
             <div style={{ fontSize: 12, color: "#93a1b2", fontWeight: 800, textTransform: "uppercase", marginBottom: 8 }}>Today</div>
             <Headline size={26} style={{ color: "#fff", marginBottom: 6 }}>
-              {weeklyValid >= WEEKLY_TARGET ? "Target hit. Keep the streak warm." : `${WEEKLY_TARGET - weeklyValid} to go this week.`}
+              {weeklyValid >= selectedTarget ? "Target hit. Keep your knowledge secure." : `${selectedTarget - weeklyValid} to go this week.`}
             </Headline>
             <Deck style={{ color: "#cbd5e1", maxWidth: 420 }}>
               {reviewMode ? "Review the questions that tripped you up most recently." : studyMode ? "Pick a topic and practise it deliberately." : "Answer in your own words, get marked straight away, then move on."}
             </Deck>
           </div>
-          <Badge color={weeklyValid >= WEEKLY_TARGET ? C.grn : C.pri} style={{ background: "rgba(255,255,255,0.12)", color: "#fff" }}>{weeklyValid}/{WEEKLY_TARGET}</Badge>
+          <Badge color={weeklyValid >= selectedTarget ? C.grn : C.pri} style={{ background: "rgba(255,255,255,0.12)", color: "#fff" }}>{weeklyValid}/{selectedTarget}</Badge>
         </div>
         <div style={{ height: 8, background: "rgba(255,255,255,0.16)", borderRadius: 999, overflow: "hidden" }}>
-          <div style={{ width: `${weekPct}%`, height: "100%", background: weeklyValid >= WEEKLY_TARGET ? "#78d5bb" : "#f7b1aa", borderRadius: 999, transition: "width .4s ease" }} />
+          <div style={{ width: `${weekPct}%`, height: "100%", background: weeklyValid >= selectedTarget ? "#78d5bb" : "#f7b1aa", borderRadius: 999, transition: "width .4s ease" }} />
         </div>
         {!sessionStarted && activeQs.length > 0 && (!studyMode || studyTopicId) && (
           <Btn onClick={() => setSessionStarted(true)} style={{ marginTop: 14, width: "100%", background: "#fff", color: C.panel, borderColor: "#fff" }}>
@@ -928,7 +1078,7 @@ export function Student({ user }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: C.txt }}>Weekly target</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: weeklyValid >= WEEKLY_TARGET ? C.grn : weeklyValid >= WEEKLY_TARGET * 0.5 ? C.amb : C.red }}>{weeklyValid}/{WEEKLY_TARGET}</span>
+            <span style={{ fontSize: 13, fontWeight: 700, color: weeklyValid >= selectedTarget ? C.grn : weeklyValid >= selectedTarget * 0.5 ? C.amb : C.red }}>{weeklyValid}/{selectedTarget}</span>
             <button onClick={() => setShowWeeks(!showWeeks)} style={{ background: "none", border: "none", color: C.dim, fontSize: 11, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}>
               {showWeeks ? "Hide" : "History"}
             </button>
@@ -936,10 +1086,10 @@ export function Student({ user }) {
         </div>
         {/* Progress bar */}
         <div style={{ width: "100%", height: 10, background: C.bdr, borderRadius: 99, overflow: "hidden", position: "relative" }}>
-          <div style={{ width: `${weekPct}%`, height: "100%", background: weeklyValid >= WEEKLY_TARGET ? C.grn : weeklyValid >= WEEKLY_TARGET * 0.5 ? C.amb : C.red, borderRadius: 99, transition: "width .4s ease" }} />
+          <div style={{ width: `${weekPct}%`, height: "100%", background: weeklyValid >= selectedTarget ? C.grn : weeklyValid >= selectedTarget * 0.5 ? C.amb : C.red, borderRadius: 99, transition: "width .4s ease" }} />
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-          <span style={{ fontSize: 10, color: C.dim }}>{weeklyValid < WEEKLY_TARGET ? `${WEEKLY_TARGET - weeklyValid} to go` : "Target hit"}</span>
+          <span style={{ fontSize: 12, color: C.dim }}>{weeklyValid < selectedTarget ? `${selectedTarget - weeklyValid} to go` : "Target hit"}</span>
           {SHOW_GAMIFICATION && overTarget > 0 && <span style={{ fontSize: 10, color: C.amb }}>Next ⭐ in {STAR_INTERVAL - (overTarget % STAR_INTERVAL)} questions</span>}
         </div>
         {sessionQCount > 0 && (
@@ -966,10 +1116,10 @@ export function Student({ user }) {
               <div style={{ flex: 1, fontSize: 12, color: C.mid }}>{w.label}</div>
               <div style={{ width: 80 }}>
                 <div style={{ width: "100%", height: 4, background: C.bdr, borderRadius: 99 }}>
-                  <div style={{ width: `${Math.min(100, (w.valid / WEEKLY_TARGET) * 100)}%`, height: "100%", background: w.metTarget ? C.grn : C.red, borderRadius: 99 }} />
+                  <div style={{ width: `${Math.min(100, (w.valid / selectedTarget) * 100)}%`, height: "100%", background: w.metTarget ? C.grn : C.red, borderRadius: 99 }} />
                 </div>
               </div>
-              <span style={{ fontSize: 11, fontWeight: 600, color: w.metTarget ? C.grn : C.red, minWidth: 35, textAlign: "right" }}>{w.valid}/{WEEKLY_TARGET}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: w.metTarget ? C.grn : C.red, minWidth: 35, textAlign: "right" }}>{w.valid}/{selectedTarget}</span>
               {SHOW_GAMIFICATION && w.stars > 0 && <span style={{ fontSize: 12 }}>{"⭐".repeat(Math.min(w.stars, 3))}{w.stars > 3 ? `+${w.stars-3}` : ""}</span>}
               {!w.metTarget && w.valid > 0 && <span style={{ width: 6, height: 6, borderRadius: "50%", background: C.red, display: "inline-block" }} />}
             </div>
@@ -1044,6 +1194,29 @@ export function Student({ user }) {
               );
             })}
           </div>
+        </Card>
+      )}
+
+      {qs.length > 0 && (
+        <Card style={{ padding: 18, marginBottom: 16 }}>
+          <div className="student-section-heading" style={{ marginBottom: 13 }}>
+            <div><Kicker color={C.grn}>Learning progress</Kicker><Headline size={20}>What is getting stronger</Headline></div>
+            {mastery.change != null ? <Badge color={mastery.change >= 0 ? C.grn : C.amb}>{mastery.change >= 0 ? "+" : ""}{mastery.change}%</Badge> : null}
+          </div>
+          <div className="student-mastery-grid">
+            <div><strong style={{ color: C.grn }}>{mastery.secure}</strong><span>Questions secure</span></div>
+            <div><strong style={{ color: mastery.due ? C.amb : C.grn }}>{mastery.due}</strong><span>Due for review</span></div>
+            <div><strong style={{ color: C.blue }}>{mastery.strengthened.length}</strong><span>Topics improved</span></div>
+          </div>
+          {mastery.strengthened.length > 0 ? (
+            <div style={{ marginTop: 13, padding: "11px 13px", borderRadius: 9, background: C.grnS, color: C.txt, fontSize: 13, lineHeight: 1.55 }}>
+              Strongest recent improvement: <strong>{mastery.strengthened[0].name}</strong>, up {mastery.strengthened[0].change} points compared with the previous three weeks.
+            </div>
+          ) : mastery.due > 0 ? (
+            <div style={{ marginTop: 13, padding: "11px 13px", borderRadius: 9, background: C.ambS, color: C.txt, fontSize: 13, lineHeight: 1.55 }}>{mastery.due} scheduled review{mastery.due === 1 ? " is" : "s are"} ready. The adaptive session will place these first.</div>
+          ) : (
+            <div style={{ marginTop: 13, padding: "11px 13px", borderRadius: 9, background: C.card2, color: C.mid, fontSize: 13 }}>Keep practising and your improvement trend will appear here.</div>
+          )}
         </Card>
       )}
 
@@ -1143,14 +1316,14 @@ export function Student({ user }) {
       ) : showSummary ? (
         /* ── Session summary ── */
         <Card style={{ padding: 24, textAlign: "center" }}>
-          <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}>{weeklyValid >= WEEKLY_TARGET
+          <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}>{weeklyValid >= selectedTarget
             ? <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke={C.grn} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><path d="m9 11 3 3L22 4" /></svg>
             : <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke={C.acc} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><rect x="7" y="11" width="3" height="6" /><rect x="13" y="7" width="3" height="10" /></svg>}</div>
           <div style={{ fontSize: 20, fontWeight: 800, color: C.txt, letterSpacing: -0.5, marginBottom: 4 }}>
-            {weeklyValid >= WEEKLY_TARGET ? "Target hit!" : "Session complete"}
+            {weeklyValid >= selectedTarget ? "Target hit!" : "Session complete"}
           </div>
           <div style={{ fontSize: 13, color: C.dim, marginBottom: 24 }}>
-            {weeklyValid >= WEEKLY_TARGET ? `${weeklyValid}/${WEEKLY_TARGET} questions done this week` : `${weeklyValid}/${WEEKLY_TARGET} questions done this week — keep going!`}
+            {weeklyValid >= selectedTarget ? `${weeklyValid}/${selectedTarget} questions done this week` : `${weeklyValid}/${selectedTarget} questions done this week — keep going!`}
           </div>
 
           {/* Session stats */}
@@ -1208,12 +1381,12 @@ export function Student({ user }) {
           )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {weeklyValid < WEEKLY_TARGET && (
+            {weeklyValid < selectedTarget && (
               <Btn onClick={() => setShowSummary(false)} style={{ width: "100%", padding: "14px 20px" }}>
                 Keep going →
               </Btn>
             )}
-            {weeklyValid >= WEEKLY_TARGET && (
+            {weeklyValid >= selectedTarget && (
               <Btn onClick={() => setShowSummary(false)} style={{ width: "100%", padding: "14px 20px" }}>
                 Keep going — every extra question counts
               </Btn>
@@ -1244,41 +1417,42 @@ export function Student({ user }) {
           <div style={{ fontSize: 13, color: C.mid, marginBottom: 18 }}>
             {reviewMode ? `${mistakeQIds.size} question${mistakeQIds.size === 1 ? "" : "s"} you recently got wrong` :
              studyMode && !studyTopicId ? "Pick a topic above to begin" :
-             weeklyValid >= WEEKLY_TARGET ? `You've already hit this week's target — anything more is a bonus` :
-             `${Math.max(0, WEEKLY_TARGET - weeklyValid)} to go this week`}
+             weeklyValid >= selectedTarget ? `You've already hit this week's target — anything more is a bonus` :
+             `${Math.max(0, selectedTarget - weeklyValid)} to go this week`}
           </div>
 
           {activeQs.length > 0 && (!studyMode || studyTopicId) && (
             <>
-              {/* Session breakdown */}
-              <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-                <div style={{ flex: 1, padding: "12px 10px", borderRadius: 10, background: C.card2 }}>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: C.pri }}>{introBreakdown.total}</div>
-                  <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>Questions</div>
+              {!reviewMode && (
+                <div style={{ marginBottom: 17, textAlign: "left" }}>
+                  <div style={{ fontSize: 12, color: C.mid, fontWeight: 700, marginBottom: 8 }}>Choose your session</div>
+                  <div className="student-session-options">
+                    {SESSION_LENGTHS.map(option => (
+                      <button key={option.value} type="button" aria-pressed={sessionTarget === option.value} onClick={() => setSessionTarget(option.value)} className={sessionTarget === option.value ? "active" : ""}>
+                        <strong>{option.label}</strong><small>{option.value} questions · about {option.minutes} min</small>
+                      </button>
+                    ))}
+                  </div>
                 </div>
+              )}
+              {/* Session breakdown */}
+              <div className="student-session-mix">
                 {!reviewMode && (
                   <>
-                    <div style={{ flex: 1, padding: "12px 10px", borderRadius: 10, background: C.card2 }}>
-                      <div style={{ fontSize: 22, fontWeight: 800, color: C.acc }}>{introBreakdown.fresh}</div>
-                      <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>New</div>
-                    </div>
-                    <div style={{ flex: 1, padding: "12px 10px", borderRadius: 10, background: C.card2 }}>
-                      <div style={{ fontSize: 22, fontWeight: 800, color: C.amb }}>{introBreakdown.review}</div>
-                      <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>Review</div>
-                    </div>
+                    <div><strong style={{ color: C.amb }}>{introBreakdown.due}</strong><small>Due reviews</small></div>
+                    <div><strong style={{ color: C.red }}>{introBreakdown.weak}</strong><small>Weak areas</small></div>
+                    <div><strong style={{ color: C.acc }}>{introBreakdown.fresh}</strong><small>New</small></div>
                   </>
                 )}
-                <div style={{ flex: 1, padding: "12px 10px", borderRadius: 10, background: C.card2 }}>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: C.mid }}>~{estimatedMinutes}</div>
-                  <div style={{ fontSize: 10, color: C.dim, textTransform: "uppercase", letterSpacing: 0.4, marginTop: 2 }}>Min</div>
-                </div>
+                <div><strong style={{ color: C.pri }}>{introBreakdown.total}</strong><small>Questions</small></div>
+                <div><strong style={{ color: C.mid }}>~{estimatedMinutes}</strong><small>Minutes</small></div>
               </div>
 
               <Btn onClick={() => setSessionStarted(true)} style={{ width: "100%", padding: "14px 20px" }}>
                 {reviewMode ? "Start review →" : "Start session →"}
               </Btn>
               {!reviewMode && (
-                <div style={{ fontSize: 11, color: C.dim, marginTop: 10 }}>You can finish early whenever you want</div>
+                <div style={{ fontSize: 12, color: C.dim, marginTop: 10 }}>You can finish early whenever you want.</div>
               )}
             </>
           )}
@@ -1296,9 +1470,9 @@ export function Student({ user }) {
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 5, justifyContent: "flex-end" }}>
-                        <span style={{ fontSize: 11, fontWeight: 800, color: srInfo.color, padding: "4px 9px", borderRadius: 99, background: `${srInfo.color}18` }}>{srInfo.label}</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: srInfo.color, padding: "4px 9px", borderRadius: 99, background: `${srInfo.color}18` }}>{whyThisQuestion.label}</span>
                       </div>
-                      <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>{srInfo.detail}</div>
+                      <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>{whyThisQuestion.detail}</div>
                     </div>
                     <span style={{ fontSize: 12, color: C.dim }}>{q?.marks}mk</span>
                   </div>
@@ -1321,7 +1495,7 @@ export function Student({ user }) {
           <div style={{ padding: "22px 18px" }}>
             {q?.image_url && (
               <div style={{ marginBottom: 14, borderRadius: 8, overflow: "hidden", border: `1px solid ${C.bdr}`, background: "#fff" }}>
-                <img src={q.image_url} alt="question diagram" style={{ width: "100%", maxHeight: 360, objectFit: "contain", display: "block" }} />
+                <Image src={q.image_url} alt={`Diagram for: ${q.question_text}`} width={1200} height={800} sizes="(max-width: 720px) calc(100vw - 68px), 620px" style={{ width: "100%", height: "auto", maxHeight: 360, objectFit: "contain", display: "block" }} />
               </div>
             )}
             <div style={{ fontSize: 20, color: C.txt, lineHeight: 1.45, marginBottom: 20, fontWeight: 700 }}>{q?.question_text}</div>
@@ -1344,11 +1518,11 @@ export function Student({ user }) {
                   // Maths: working-friendly input. Enter makes a new line, a symbol
                   // pad + ⌘. insert powers/roots/etc., and a live preview shows x².
                   // No mic — equations aren't dictated. Submit is button-only below.
-                  <MathInput value={ans} onChange={setAns} rows={4} disabled={marking} />
+                  <MathInput value={ans} onChange={updateAnswer} rows={4} disabled={marking} />
                 ) : (
                   <>
                     <div style={{ position: "relative" }}>
-                      <TA value={ans} onChange={e => setAns(e.target.value)} placeholder={isRecording ? "Listening… speak naturally" : "Type your answer… or tap the mic"} rows={4} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} style={{ paddingRight: speechSupported ? 52 : undefined, background: "#fbfcfd", lineHeight: 1.55 }} />
+                      <TA value={ans} onChange={e => updateAnswer(e.target.value)} placeholder={isRecording ? "Listening… speak naturally" : "Type your answer… or tap the mic"} rows={4} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} style={{ paddingRight: speechSupported ? 52 : undefined, background: "#fbfcfd", lineHeight: 1.65, fontSize: 16 }} />
                       {speechSupported && (
                         <button type="button" onClick={toggleMic} aria-label={isRecording ? "Stop recording" : "Start voice input"}
                           style={{ position: "absolute", right: 10, bottom: 10, width: 36, height: 36, borderRadius: 99, border: `1px solid ${isRecording ? C.red : C.bdr}`, background: isRecording ? C.red : C.card, color: isRecording ? "#fff" : C.mid, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, padding: 0, boxShadow: isRecording ? `0 0 0 4px ${C.redS}` : "none", transition: "all .15s ease" }}>
@@ -1370,19 +1544,36 @@ export function Student({ user }) {
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", borderRadius: 8, background: res.correct ? C.grnS : C.redS, border: `1px solid ${res.correct ? "rgba(22,131,94,.25)" : "rgba(201,59,50,.25)"}`, marginBottom: 14 }}>
                   <span style={{ fontSize: 22, lineHeight: 1 }}>{res.correct ? "✓" : "✗"}</span>
                   <div>
-                    <div style={{ color: res.correct ? C.grn : C.red, fontWeight: 800, fontSize: 15 }}>{res.correct ? "Good answer" : "Not quite yet"} <span style={{ fontWeight: 500, opacity: .75 }}>({res.marks_awarded}/{q.marks})</span></div>
-                    <div style={{ color: C.mid, fontSize: 13, marginTop: 3, lineHeight: 1.4 }}>{res.feedback}</div>
+                    <div style={{ color: res.correct ? C.grn : C.red, fontWeight: 800, fontSize: 15 }}>{res.correct ? (learningStep?.phase === "complete" ? "Improved answer" : "Good answer") : "Not quite yet"} <span style={{ fontWeight: 500, opacity: .75 }}>({res.marks_awarded}/{q.marks})</span></div>
+                    <div style={{ color: C.mid, fontSize: 14, marginTop: 4, lineHeight: 1.55 }}>{visibleFeedback}</div>
                   </div>
                 </div>
-                <div style={{ padding: "11px 14px", background: C.card2, borderRadius: 8, marginBottom: 8, fontSize: 13, border: `1px solid ${C.bdrSoft}` }}>
-                  <span style={{ color: C.dim, fontSize: 11, fontWeight: 800 }}>You wrote</span>
-                  <div style={{ color: C.mid, marginTop: 3 }}>{ans}</div>
-                </div>
-                <div style={{ padding: "11px 14px", background: C.priSoft, borderRadius: 8, marginBottom: 16, fontSize: 13, border: `1px solid ${C.pri}22` }}>
-                  <span style={{ color: C.dim, fontSize: 11, fontWeight: 800 }}>Model answer</span>
-                  <div style={{ color: C.txt, marginTop: 3 }}>{q.model_answer}</div>
-                </div>
-                <Btn onClick={next} style={{ width: "100%", padding: "14px 20px" }}>Next question →</Btn>
+                {res.queued ? <div role="status" style={{ padding: "9px 12px", marginBottom: 10, borderRadius: 8, background: C.ambS, color: C.amb, fontSize: 13 }}>You appear to be offline. This answer is saved on this device and will sync automatically.</div> : null}
+
+                {learningStep?.phase === "complete" && learningStep.originalAnswer ? (
+                  <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+                    <div style={{ padding: "11px 14px", background: C.card2, borderRadius: 8, fontSize: 14, border: `1px solid ${C.bdrSoft}` }}><span style={{ color: C.dim, fontSize: 12, fontWeight: 800 }}>First answer</span><div style={{ color: C.mid, marginTop: 4 }}>{learningStep.originalAnswer}</div></div>
+                    {learningStep.retryAnswer ? <div style={{ padding: "11px 14px", background: learningStep.retryCorrect ? C.grnS : C.ambS, borderRadius: 8, fontSize: 14, border: `1px solid ${learningStep.retryCorrect ? C.grn : C.amb}33` }}><span style={{ color: C.dim, fontSize: 12, fontWeight: 800 }}>Improved answer</span><div style={{ color: C.txt, marginTop: 4 }}>{learningStep.retryAnswer}</div></div> : null}
+                  </div>
+                ) : (
+                  <div style={{ padding: "11px 14px", background: C.card2, borderRadius: 8, marginBottom: 8, fontSize: 14, border: `1px solid ${C.bdrSoft}` }}><span style={{ color: C.dim, fontSize: 12, fontWeight: 800 }}>You wrote</span><div style={{ color: C.mid, marginTop: 4 }}>{ans}</div></div>
+                )}
+
+                {!res.correct && learningStep?.phase === "prompt" ? (
+                  <div style={{ padding: 15, borderRadius: 10, border: `1px solid ${C.amb}55`, background: C.ambS, marginBottom: 12 }}>
+                    <Kicker color={C.amb}>Act on the feedback</Kicker>
+                    <div style={{ color: C.txt, fontSize: 14, lineHeight: 1.55, marginBottom: 12 }}>Change or add the key idea the feedback points to. You get one supported retry before seeing the model answer.</div>
+                    <div className="student-feedback-actions"><Btn onClick={startAnswerRetry}>Improve my answer</Btn><Btn v="ghost" onClick={revealModelAnswer}>Show model answer</Btn></div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ padding: "12px 14px", background: C.priSoft, borderRadius: 8, marginBottom: 16, fontSize: 14, border: `1px solid ${C.pri}22` }}>
+                      <span style={{ color: C.dim, fontSize: 12, fontWeight: 800 }}>Model answer</span>
+                      <div style={{ color: C.txt, marginTop: 4, lineHeight: 1.6 }}>{q.model_answer}</div>
+                    </div>
+                    <Btn onClick={next} style={{ width: "100%", padding: "14px 20px" }}>Next question →</Btn>
+                  </>
+                )}
                 {flagMsg ? (
                   <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: flagMsg.startsWith("Error") ? C.redS : C.grnS, color: flagMsg.startsWith("Error") ? C.red : C.grn, fontSize: 12, textAlign: "center" }}>{flagMsg}</div>
                 ) : !flagging ? (
@@ -1405,7 +1596,7 @@ export function Student({ user }) {
           </div>
         </Card>
       )}
-    </div>
+    </main>
   );
 }
 

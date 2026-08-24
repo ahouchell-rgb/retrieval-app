@@ -34,7 +34,7 @@ export const Bar = ({ pct, label }) => {
 
 /* Editorial primitives — for D2 register */
 export const Kicker = ({ children, color = C.pri, style }) => <div style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", color, marginBottom: 6, ...style }}>{children}</div>;
-export const Headline = ({ children, size = 24, style }) => <div style={{ fontFamily: C.serif, fontSize: size, fontWeight: 700, lineHeight: 1.12, color: C.txt, ...style }}>{children}</div>;
+export const Headline = ({ children, size = 24, style, ...props }) => <div {...props} style={{ fontFamily: C.serif, fontSize: size, fontWeight: 700, lineHeight: 1.12, color: C.txt, ...style }}>{children}</div>;
 export const Deck = ({ children, style }) => <div style={{ fontSize: 14, lineHeight: 1.5, color: C.mid, ...style }}>{children}</div>;
 export const SectionTitle = ({ children, style }) => <div style={{ fontFamily: C.serif, fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em", color: C.txt, ...style }}>{children}</div>;
 export const Dateline = ({ left, right, style }) => <div style={{ padding: "9px 0", borderBottom: `1px solid ${C.bdr}`, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: C.mid, fontWeight: 700, ...style }}><span style={{ color: C.pri }}>{left}</span><span>{right}</span></div>;

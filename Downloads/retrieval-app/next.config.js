@@ -12,6 +12,11 @@ const frameAncestors = `'self' ${process.env.ALLOWED_FRAME_ANCESTORS || "https:/
 
 const nextConfig = {
   reactStrictMode: true,
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "uvzukwoxqhcxaxtzrziy.supabase.co", pathname: "/storage/v1/object/**" },
+    ],
+  },
   async headers() {
     return [
       {

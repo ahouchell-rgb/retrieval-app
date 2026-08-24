@@ -502,7 +502,7 @@ Deno.serve(async (req: Request) => {
       verdict = {
         correct,
         marks_awarded: correct ? maxMarks : 0,
-        feedback: correct ? "Correct." : `The correct answer is: ${options[Number(questionRow.data.correct_index)] ?? model_answer}`,
+        feedback: correct ? "Correct." : "Not quite. Re-read the question, eliminate the least likely options, and try once more.",
         flagged: false,
         source: "mcq",
         confidence: "high",

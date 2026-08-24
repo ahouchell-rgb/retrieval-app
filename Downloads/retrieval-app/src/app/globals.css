@@ -268,6 +268,61 @@ a { color: inherit; }
 .fe-skeleton { background: linear-gradient(90deg,#e8ecef 20%,#f6f8f9 38%,#e8ecef 58%); background-size: 220% 100%; animation: skeleton-shimmer 1.25s ease-in-out infinite; }
 @keyframes skeleton-shimmer { to { background-position: -220% 0; } }
 
+/* Student workspace — deliberately calmer and more touch-friendly than the
+   dense staff dashboard. These rules also power the pupil's display choices. */
+.student-shell { color: var(--fe-ink); }
+.student-home { width: min(calc(100% - 32px), 760px); margin: 0 auto; padding: 26px 0 70px; }
+.student-shell button, .student-shell input, .student-shell textarea, .student-shell select { min-height: 44px; }
+.student-shell a { min-height: 44px; }
+.student-home-topline, .student-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.student-home-topline { align-items: center; margin-bottom: 18px; }
+.student-section-heading { align-items: center; margin-bottom: 10px; }
+.student-task-row { width: 100%; display: flex; align-items: center; gap: 12px; padding: 14px 15px; border: 0; border-bottom: 1px solid var(--fe-border-soft); color: var(--fe-ink); background: white; text-align: left; cursor: pointer; font-family: inherit; }
+.student-task-row:last-child { border-bottom: 0; }
+.student-task-row:hover { background: var(--fe-surface-subtle); }
+.student-task-icon { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border-radius: 9px; color: var(--fe-brand); background: var(--fe-brand-soft); font-size: 12px; font-weight: 850; }
+.student-class-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.student-class-card { display: flex; flex-direction: column; gap: 13px; width: 100%; padding: 16px; border: 1px solid var(--fe-border); border-radius: 12px; color: var(--fe-ink); background: white; text-align: left; cursor: pointer; font-family: inherit; box-shadow: var(--fe-shadow-sm); }
+.student-class-card:hover { border-color: rgba(201,59,50,.35); box-shadow: 0 10px 28px rgba(17,24,32,.08); }
+.student-class-card strong { display: block; font-size: 15px; }
+.student-class-card small { display: block; margin-top: 4px; color: var(--fe-muted); font-size: 12px; }
+.student-class-action { color: var(--fe-brand); font-size: 12px; font-weight: 750; }
+.student-join-row { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; }
+.student-settings-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+.student-setting { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--fe-border); border-radius: 10px; color: var(--fe-ink); background: white; text-align: left; cursor: pointer; font-family: inherit; }
+.student-setting.active { border-color: var(--fe-brand); background: var(--fe-brand-soft); }
+.student-setting strong, .student-setting small { display: block; }
+.student-setting strong { font-size: 13px; }
+.student-setting small { margin-top: 3px; color: var(--fe-muted); font-size: 11px; line-height: 1.4; }
+.student-switch { width: 34px; height: 20px; flex: 0 0 34px; padding: 2px; border-radius: 99px; background: #cfd6dd; }
+.student-switch span { display: block; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.18); transition: transform .15s; }
+.student-setting.active .student-switch { background: var(--fe-brand); }
+.student-setting.active .student-switch span { transform: translateX(14px); }
+.student-session-options { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
+.student-session-options button { padding: 10px; border: 1px solid var(--fe-border); border-radius: 9px; color: var(--fe-ink); background: white; text-align: left; cursor: pointer; font-family: inherit; }
+.student-session-options button.active { border-color: var(--fe-brand); background: var(--fe-brand-soft); box-shadow: 0 0 0 2px rgba(201,59,50,.08); }
+.student-session-options strong, .student-session-options small { display: block; }
+.student-session-options strong { font-size: 13px; }
+.student-session-options small { margin-top: 3px; color: var(--fe-muted); font-size: 11px; line-height: 1.35; }
+.student-session-mix, .student-mastery-grid { display: grid; gap: 8px; margin-bottom: 18px; }
+.student-session-mix { grid-template-columns: repeat(5,minmax(0,1fr)); }
+.student-session-mix > div, .student-mastery-grid > div { padding: 11px 8px; border-radius: 9px; background: var(--fe-surface-subtle); text-align: center; }
+.student-session-mix strong, .student-session-mix small, .student-mastery-grid strong, .student-mastery-grid span { display: block; }
+.student-session-mix strong, .student-mastery-grid strong { font: 800 22px/1 var(--font-plex),sans-serif; }
+.student-session-mix small, .student-mastery-grid span { margin-top: 5px; color: var(--fe-muted); font-size: 11px; line-height: 1.25; }
+.student-mastery-grid { grid-template-columns: repeat(3,1fr); margin-bottom: 0; }
+.student-mastery-grid strong { font-size: 27px; }
+.student-feedback-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+html.student-reading-mode .student-shell { font-family: Arial, Helvetica, sans-serif !important; letter-spacing: .012em; }
+html.student-reading-mode .student-shell textarea, html.student-reading-mode .student-shell input { font-family: Arial, Helvetica, sans-serif !important; line-height: 1.75 !important; }
+html.student-reading-mode .student-practice { max-width: 720px !important; }
+html.student-large-text .student-shell [style*="font-size: 10px"], html.student-large-text .student-shell [style*="font-size: 11px"] { font-size: 13px !important; }
+html.student-large-text .student-shell [style*="font-size: 12px"] { font-size: 14px !important; }
+html.student-large-text .student-shell [style*="font-size: 13px"] { font-size: 15px !important; }
+html.student-large-text .student-shell [style*="font-size: 14px"] { font-size: 16px !important; }
+html.student-reduced-motion .student-shell *, html.student-reduced-motion .student-shell *::before, html.student-reduced-motion .student-shell *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+
 .legal-hero { padding: 72px 0 48px; background: linear-gradient(180deg,#fff,#f7f8f9); border-bottom: 1px solid var(--fe-border-soft); }
 .legal-hero h1 { margin: 13px 0 0; font: 700 clamp(38px,5vw,58px)/1 var(--font-serif), Georgia, serif; letter-spacing: -.04em; }
 .legal-hero p { max-width: 700px; margin: 18px 0 0; color: var(--fe-muted); font-size: 16px; line-height: 1.65; }
@@ -364,6 +419,17 @@ textarea.form-control { min-height: 82px; resize: vertical; }
 }
 
 @media (max-width: 720px) {
+  .student-home { width: min(calc(100% - 24px), 760px); padding-top: 17px; }
+  .student-home-topline { align-items: flex-start; }
+  .student-class-grid, .student-settings-grid { grid-template-columns: 1fr; }
+  .student-task-row { align-items: flex-start; }
+  .student-task-row > span:last-child { align-self: center; }
+  .student-session-options { grid-template-columns: 1fr; }
+  .student-session-options button { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .student-session-options small { margin-top: 0; text-align: right; }
+  .student-session-mix { grid-template-columns: repeat(3,1fr); }
+  .student-session-mix > div:nth-last-child(-n+2) { grid-column: span 1; }
+  .student-feedback-actions { grid-template-columns: 1fr; }
   .public-wrap { width: min(calc(100% - 28px), var(--fe-content)); }
   .public-header-inner { min-height: 60px; }
   .brand-name { font-size: 14px; }

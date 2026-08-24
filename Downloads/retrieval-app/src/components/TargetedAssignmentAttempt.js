@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { MathInput } from "./MathInput";
-import { Badge, Btn, Card, Dateline, Deck, Headline, Kicker, TA } from "./ui";
+import { Badge, Btn, Card, Dateline, Deck, Headline, Kicker, Skeleton, TA } from "./ui";
 
 export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
   const [questions, setQuestions] = useState([]);
@@ -40,6 +40,23 @@ export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
   const shown = current || (result ? questions.find(q => q.id === answered.at(-1)?.question_id) : null);
   const pct = answered.length ? Math.round((correct / answered.length) * 100) : 0;
   const isMaths = cls?.subjects?.marker_profile === "maths";
+  const draftKey = current?.id ? `student.assignmentDraft.${user.id}.${assignment.id}.${current.id}` : null;
+  useEffect(() => {
+    if (!draftKey || result) return;
+    try { setAnswer(window.localStorage.getItem(draftKey) || ""); } catch { setAnswer(""); }
+  }, [draftKey, result]);
+  const updateAnswer = value => {
+    setAnswer(value);
+    if (!draftKey) return;
+    try {
+      if (value) window.localStorage.setItem(draftKey, value);
+      else window.localStorage.removeItem(draftKey);
+    } catch {}
+  };
+  const clearDraft = () => {
+    if (!draftKey) return;
+    try { window.localStorage.removeItem(draftKey); } catch {}
+  };
 
   const remember = (question, verdict) => {
     setAnswered(rows => [...rows, {
@@ -49,6 +66,7 @@ export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
       marks_awarded: verdict.marks_awarded || 0,
       answered_at: new Date().toISOString(),
     }]);
+    clearDraft();
     setResult(verdict); setMarking(false); lock.current = false;
   };
 
@@ -83,10 +101,10 @@ export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
 
   const next = () => { setAnswer(""); setResult(null); setError(""); lock.current = false; };
 
-  if (loading) return <div style={{ padding: 40, textAlign: "center", color: C.dim }}>Opening assignment…</div>;
+  if (loading) return <main className="student-shell" aria-label="Opening assignment" style={{ padding: 22, maxWidth: 620, margin: "0 auto" }}><Card style={{ padding: 20 }}><Skeleton width="35%" /><Skeleton width="80%" height={30} style={{ marginTop: 14 }} /><Skeleton height={110} style={{ marginTop: 18 }} /></Card></main>;
 
   return (
-    <div style={{ padding: "16px 16px 60px", maxWidth: 620, margin: "0 auto" }}>
+    <main className="student-shell" style={{ padding: "16px 16px 60px", maxWidth: 660, margin: "0 auto" }}>
       <Dateline left="Targeted practice" right={cls.name} style={{ marginBottom: 14 }} />
       <button onClick={onExit} style={{ background: "none", border: "none", padding: 0, marginBottom: 14, color: C.mid, cursor: "pointer", fontFamily: "inherit", fontSize: 13 }}>← Back to class</button>
 
@@ -120,9 +138,9 @@ export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
               {shown.options.map((option, index) => <button key={index} onClick={() => submitMcq(index)} disabled={marking || !!result} style={{ padding: "11px 13px", textAlign: "left", borderRadius: 8, border: `1px solid ${answer === option ? C.pri : C.bdr}`, background: answer === option ? C.priSoft : C.card2, color: C.txt, cursor: result ? "default" : "pointer", fontFamily: "inherit" }}>{option}</button>)}
             </div>
           ) : isMaths ? (
-            <MathInput value={answer} onChange={setAnswer} disabled={marking || !!result} onSubmit={submitText} />
+            <MathInput value={answer} onChange={updateAnswer} disabled={marking || !!result} onSubmit={submitText} />
           ) : (
-            <TA value={answer} onChange={e => setAnswer(e.target.value)} disabled={marking || !!result} rows={4} maxLength={2000} placeholder="Write your answer in your own words…" />
+            <TA value={answer} onChange={e => updateAnswer(e.target.value)} disabled={marking || !!result} rows={4} maxLength={2000} placeholder="Write your answer in your own words…" style={{ fontSize: 16, lineHeight: 1.65 }} />
           )}
 
           {!result && shown.kind !== "mcq" && <Btn onClick={submitText} disabled={!answer.trim() || marking} style={{ width: "100%", marginTop: 10 }}>{marking ? "Marking…" : "Check answer"}</Btn>}
@@ -138,6 +156,6 @@ export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
       ) : (
         <Card style={{ padding: 22, textAlign: "center" }}><div style={{ color: C.mid }}>No questions are available for this assignment.</div></Card>
       )}
-    </div>
+    </main>
   );
 }

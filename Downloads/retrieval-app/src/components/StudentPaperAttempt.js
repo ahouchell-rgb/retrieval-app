@@ -1,10 +1,11 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
+import Image from "next/image";
 import { SUPA_KEY, SUPA_URL, sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { MathInput } from "./MathInput";
 import { PaperManager } from "./PaperManager";
-import { Btn, Card, TA } from "./ui";
+import { Btn, Card, Skeleton, TA } from "./ui";
 import { useFeedback } from "./Feedback";
 
 export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttempt = false }) {
@@ -77,6 +78,20 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
 
   const currentQ = questions[qi];
   const existingResp = currentQ ? responses[currentQ.id] : null;
+  const draftKey = attempt?.id && currentQ?.id ? `student.paperDraft.${user.id}.${attempt.id}.${currentQ.id}` : null;
+  useEffect(() => {
+    if (!draftKey || existingResp) return;
+    try { setAns(window.localStorage.getItem(draftKey) || ""); } catch { setAns(""); }
+  }, [draftKey, existingResp]);
+  const updateAnswer = value => {
+    setAns(value);
+    if (!draftKey) return;
+    try {
+      if (value) window.localStorage.setItem(draftKey, value);
+      else window.localStorage.removeItem(draftKey);
+    } catch {}
+  };
+  const clearDraft = () => { if (draftKey) try { window.localStorage.removeItem(draftKey); } catch {} };
   // Maths papers get the working-friendly input (symbol pad + live preview).
   // Keyed off the paper's subject marker_profile — the field the server resolves
   // to choose the maths marking overlay, so input and marking stay in step.
@@ -123,6 +138,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
         }
       }
       setLastResult(d);
+      clearDraft();
     } catch (e) { console.error("mark failed", e); notify("We could not mark that answer. " + e.message, { title: "Marking failed" }); }
     submissionLockRef.current = false;
     setMarking(false);
@@ -157,7 +173,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
     setSubmitting(false);
   };
 
-  if (loading) return <div style={{ padding: 40, textAlign: "center", color: C.dim, fontSize: 13 }}>Loading paper…</div>;
+  if (loading) return <main className="student-shell" aria-label="Loading paper" style={{ padding: 22, maxWidth: 560, margin: "0 auto" }}><Card style={{ padding: 20 }}><Skeleton width="40%" /><Skeleton width="85%" height={28} style={{ marginTop: 15 }} /><Skeleton height={120} style={{ marginTop: 18 }} /></Card></main>;
   if (loadError) return <div style={{ padding: 40, textAlign: "center" }}><div style={{ fontSize: 13, color: C.txt, marginBottom: 12 }}>{loadError}</div><Btn onClick={onExit}>Back</Btn></div>;
   if (!paper || questions.length === 0) {
     return (
@@ -177,7 +193,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
     const tone = pct >= 70 ? C.grn : pct >= 50 ? C.amb : C.red;
     const answeredCount = Object.keys(responses).length;
     return (
-      <div style={{ padding: "16px 16px 32px", maxWidth: 560, margin: "0 auto" }}>
+      <main className="student-shell" style={{ padding: "16px 16px 32px", maxWidth: 600, margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
           <button onClick={onExit} style={{ padding: "6px 10px", fontSize: 11, borderRadius: 6, border: `1px solid ${C.bdr}`, background: "transparent", color: C.mid, cursor: "pointer", fontFamily: "inherit" }}>← Done</button>
           <div style={{ fontSize: 14, fontWeight: 700, color: C.txt }}>{paper.name}</div>
@@ -225,7 +241,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
             );
           })}
         </div>
-      </div>
+      </main>
     );
   }
 
@@ -234,7 +250,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
   const sessionPct = Math.round((answeredSoFar / questions.length) * 100);
 
   return (
-    <div style={{ padding: "16px 16px 32px", maxWidth: 560, margin: "0 auto" }}>
+    <main className="student-shell" style={{ padding: "16px 16px 32px", maxWidth: 600, margin: "0 auto" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
         <button onClick={async () => { const approved = await confirm({ title: "Save and exit?", message: "Your progress will be kept and you can resume this paper later.", confirmLabel: "Save and exit", tone: "neutral" }); if (approved) onExit(); }}
@@ -271,7 +287,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
         </div>
         {currentQ.image_url && (
           <div style={{ marginBottom: 14, borderRadius: 3, overflow: "hidden", border: `1px solid ${C.bdr}`, background: "#fff" }}>
-            <img src={currentQ.image_url} alt="" style={{ width: "100%", maxHeight: 320, objectFit: "contain", display: "block" }} />
+            <Image src={currentQ.image_url} alt={`Diagram for: ${currentQ.question_text}`} width={1200} height={800} sizes="(max-width: 640px) calc(100vw - 68px), 540px" style={{ width: "100%", height: "auto", maxHeight: 320, objectFit: "contain", display: "block" }} />
           </div>
         )}
         <div style={{ fontFamily: C.serif, fontSize: 19, color: C.txt, lineHeight: 1.4, marginBottom: 18, fontWeight: 500, letterSpacing: "-0.005em", whiteSpace: "pre-wrap" }}>{currentQ.question_text}</div>
@@ -280,9 +296,9 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
           <>
             <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: ".14em", textTransform: "uppercase", color: C.mid, marginBottom: 8 }}>Your answer</div>
             {isMaths ? (
-              <MathInput value={ans} onChange={setAns} rows={Math.max(3, Math.min(8, currentQ.marks * 2))} placeholder="Write your working here — press Enter for a new line" disabled={marking} />
+              <MathInput value={ans} onChange={updateAnswer} rows={Math.max(3, Math.min(8, currentQ.marks * 2))} placeholder="Write your working here — press Enter for a new line" disabled={marking} />
             ) : (
-              <TA value={ans} onChange={e => setAns(e.target.value)} rows={Math.max(3, Math.min(8, currentQ.marks * 2))} placeholder="Write your answer here…" disabled={marking} style={{ fontFamily: C.serif, fontSize: 15, lineHeight: 1.5 }} />
+              <TA value={ans} onChange={e => updateAnswer(e.target.value)} rows={Math.max(3, Math.min(8, currentQ.marks * 2))} placeholder="Write your answer here…" disabled={marking} style={{ fontFamily: C.serif, fontSize: 16, lineHeight: 1.65 }} />
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <Btn onClick={submitAnswer} disabled={!ans.trim() || marking} style={{ flex: 1 }}>{marking ? "Marking…" : "Submit answer"}</Btn>
@@ -310,7 +326,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
           </div>
         )}
       </Card>
-    </div>
+    </main>
   );
 }
 
