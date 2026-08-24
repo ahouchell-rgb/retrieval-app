@@ -11,6 +11,8 @@ import { sb } from "../lib/supabase";
 import { attachProfile, isTeacher, roleColor, roleLabel } from "../lib/roles";
 import { consumeAnonFromUrl } from "../lib/anonSession";
 import { C } from "../lib/theme";
+import { Brand } from "../components/Brand";
+import { Icon } from "../components/Icon";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -80,24 +82,23 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100dvh", background: C.bg, fontFamily: "var(--font-plex), -apple-system, sans-serif", color: C.txt }}>
-      <div style={{ borderBottom: `1px solid ${C.bdr}`, background: C.panel, color: "#fff", padding: "0 18px", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 1px 0 rgba(20,23,26,0.08)" }}>
-        <div style={{ maxWidth: teacherSide ? 1180 : 700, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 58, gap: 14 }}>
+      <header style={{ borderBottom: "1px solid rgba(255,255,255,.1)", background: C.panel, color: "#fff", padding: "0 18px", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 5px 18px rgba(17,24,32,.12)" }}>
+        <div style={{ maxWidth: teacherSide ? 1440 : 700, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 58, gap: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <span style={{ width: 32, height: 32, borderRadius: 8, background: "#fff", color: C.pri, display: "grid", placeItems: "center", fontFamily: C.serif, fontSize: 19, fontWeight: 800, flexShrink: 0 }}>F</span>
-            <span style={{ fontSize: 16, fontWeight: 800, whiteSpace: "nowrap" }}>Feynman<span style={{ color: "#f7b1aa" }}> Education</span></span>
+            <Brand href={null} inverse />
             <Badge color={roleColor(user)}>{roleLabel(user)}</Badge>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <Btn v="ghost" onClick={() => setShowSupport(true)} style={{ padding: "7px 12px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}>Help</Btn>
-            <Btn v="ghost" onClick={() => setShowAccount(true)} style={{ padding: "7px 12px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}>Account</Btn>
-            <Btn v="ghost" onClick={() => { sb.auth.out(); setUser(null); }} style={{ padding: "7px 12px", minHeight: 34, fontSize: 12, background: "transparent", color: "#93a1b2", border: "1px solid rgba(255,255,255,0.12)" }}>Log out</Btn>
+            <Btn v="ghost" onClick={() => setShowSupport(true)} style={{ padding: "7px 11px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}><Icon name="info" size={14}/> Help</Btn>
+            <Btn v="ghost" onClick={() => setShowAccount(true)} style={{ padding: "7px 11px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}><Icon name="users" size={14}/> Account</Btn>
+            <Btn v="ghost" onClick={() => { sb.auth.out(); setUser(null); }} style={{ padding: "7px 11px", minHeight: 34, fontSize: 12, background: "transparent", color: "#aab6c2", border: "1px solid rgba(255,255,255,0.12)" }}>Log out</Btn>
           </div>
         </div>
-      </div>
+      </header>
       {showAccount && <AccountModal user={user} onClose={() => setShowAccount(false)}
         onUpdated={(name) => setUser(u => ({ ...u, user_metadata: { ...u.user_metadata, display_name: name }, profile: { ...u.profile, display_name: name } }))} />}
       {showSupport && <SupportModal user={user} onClose={() => setShowSupport(false)} />}
-      <div style={{ paddingBottom: 60 }}>{teacherSide ? <Teacher user={user} /> : <Student user={user} />}</div>
+      <div id="main-content" style={{ paddingBottom: 60 }}>{teacherSide ? <Teacher user={user} /> : <Student user={user} />}</div>
       <style>{`
         *{box-sizing:border-box;margin:0;padding:0}
         body{background:${C.bg};-webkit-font-smoothing:antialiased}

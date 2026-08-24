@@ -5,8 +5,10 @@ import { fromLocalInputValue, toLocalInputValue } from "../lib/assignments";
 import { C } from "../lib/theme";
 import { PaperResults } from "./PaperResults";
 import { Btn, Card, Inp, Pill, TA } from "./ui";
+import { useFeedback } from "./Feedback";
 
 export function PaperEditor({ user, paperId, classes, topics, onBack, onResults }) {
+  const { confirm, notify } = useFeedback();
   const [paper, setPaper] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [assignments, setAssignments] = useState([]);
@@ -87,7 +89,7 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
 
   // Phase 2: read the uploaded .docx into a tickable question list.
   const readPaper = async () => {
-    if (!ffFile) { alert("Choose a Word (.docx) exam paper first."); return; }
+    if (!ffFile) { notify("Choose a Word (.docx) exam paper first.", { title: "Document needed", tone: "warning" }); return; }
     setParsing(true);
     try {
       const path = await ensureUploaded();
@@ -95,15 +97,15 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
       const qs = Array.isArray(res?.questions) ? res.questions : [];
       setParsedQs(qs);
       setFfParsedSel([]);
-      if (qs.length === 0) alert("Couldn't find any questions in that document — tick existing questions or type notes instead.");
-    } catch (e) { alert("Couldn't read the paper: " + e.message); }
+      if (qs.length === 0) notify("No questions were found in that document. Tick existing questions or add notes instead.", { title: "No questions found", tone: "warning" });
+    } catch (e) { notify("The paper could not be read. " + e.message, { title: "Document not read" }); }
     setParsing(false);
   };
 
   const generateFeedforward = async () => {
     const parsedChosen = ffParsedSel.map(i => parsedQs[i]).filter(Boolean);
     if (ffStruggled.length === 0 && parsedChosen.length === 0 && !ffNotes.trim()) {
-      alert("Tick the questions your class struggled with (or read them from an uploaded paper), or add a note."); return;
+      notify("Select the questions your class struggled with, read them from an uploaded paper, or add a note.", { title: "Add feedforward evidence", tone: "warning" }); return;
     }
     setFfBusy(true);
     try {
@@ -119,14 +121,15 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
       setFfClassId(""); setGapPct(null);
       await load();
       if (res?.url) window.open(res.url, "_blank");
-    } catch (e) { alert("Generation failed: " + e.message); }
+    } catch (e) { notify("The feedforward sheet could not be generated. " + e.message, { title: "Generation failed" }); }
     setFfBusy(false);
   };
 
   const deleteSheet = async (sheet) => {
-    if (!confirm("Delete this feedforward sheet?")) return;
+    const approved = await confirm({ title: "Delete this feedforward sheet?", message: "This removes the generated sheet from the paper.", confirmLabel: "Delete sheet" });
+    if (!approved) return;
     try { await sb.del("paper_feedforward_sheets", { id: `eq.${sheet.id}` }); await load(); }
-    catch (e) { alert("Delete failed: " + e.message); }
+    catch (e) { notify("The sheet could not be deleted. " + e.message, { title: "Delete failed" }); }
   };
 
   // Regenerate a fresh sheet from a previous one's saved inputs, with an optional tweak.
@@ -145,7 +148,7 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
       });
       await load();
       if (res?.url) window.open(res.url, "_blank");
-    } catch (e) { alert("Regenerate failed: " + e.message); }
+    } catch (e) { notify("The sheet could not be regenerated. " + e.message, { title: "Regeneration failed" }); }
     setFfBusy(false);
   };
 
@@ -188,7 +191,8 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
     // Filter out empty marking points; warn if all empty
     const cleanPoints = (qDraft.marking_points || []).filter(p => p.text && p.text.trim()).map(p => ({ text: p.text.trim(), marks: p.marks || 1 }));
     if (cleanPoints.length === 0) {
-      if (!confirm("This question has no marking points. The AI marker won't be able to score it. Save anyway?")) return;
+      const approved = await confirm({ title: "Save without marking points?", message: "The AI marker will not be able to score this question reliably.", confirmLabel: "Save anyway", tone: "warning" });
+      if (!approved) return;
     }
     setBusy(true);
     try {
@@ -211,12 +215,13 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
       setEditingQ(null);
       setQDraft(null);
       await load();
-    } catch (e) { console.error(e); alert("Save failed: " + e.message); }
+    } catch (e) { console.error(e); notify("The question could not be saved. " + e.message, { title: "Save failed" }); }
     setBusy(false);
   };
 
   const deleteQuestion = async (id) => {
-    if (!confirm("Delete this question? Any responses students have already given to it will be removed.")) return;
+    const approved = await confirm({ title: "Delete this question?", message: "Any responses pupils have already given to it will also be removed. This cannot be undone.", confirmLabel: "Delete question" });
+    if (!approved) return;
     await sb.q("paper_questions", { method: "DELETE", params: { id: `eq.${id}` } });
     await load();
   };
@@ -238,7 +243,7 @@ export function PaperEditor({ user, paperId, classes, topics, onBack, onResults 
   const saveAssignment = async (classId, patch) => {
     try {
       await sb.q("paper_class_assignments", { method: "PATCH", params: { paper_id: `eq.${paperId}`, class_id: `eq.${classId}` }, body: patch });
-    } catch (e) { alert("Could not save assignment settings: " + e.message); await load(); }
+    } catch (e) { notify("Assignment settings could not be saved. " + e.message, { title: "Settings not saved" }); await load(); }
   };
 
   if (loading) return <div style={{ padding: 20, textAlign: "center", color: C.dim, fontSize: 12 }}>Loading…</div>;

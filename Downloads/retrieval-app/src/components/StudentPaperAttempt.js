@@ -5,8 +5,10 @@ import { C } from "../lib/theme";
 import { MathInput } from "./MathInput";
 import { PaperManager } from "./PaperManager";
 import { Btn, Card, TA } from "./ui";
+import { useFeedback } from "./Feedback";
 
 export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttempt = false }) {
+  const { confirm, notify } = useFeedback();
   const [paper, setPaper] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [attempt, setAttempt] = useState(null);
@@ -121,7 +123,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
         }
       }
       setLastResult(d);
-    } catch (e) { console.error("mark failed", e); alert("Marking failed: " + e.message); }
+    } catch (e) { console.error("mark failed", e); notify("We could not mark that answer. " + e.message, { title: "Marking failed" }); }
     submissionLockRef.current = false;
     setMarking(false);
   };
@@ -151,7 +153,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
       }});
       // Optimistic UI only — the authoritative totals already live on the row.
       setAttempt(prev => ({ ...prev, submitted_at: new Date().toISOString(), total_marks: total, awarded_marks: awarded }));
-    } catch (e) { console.error("submit failed", e); alert("Submission failed: " + e.message); }
+    } catch (e) { console.error("submit failed", e); notify("We could not submit the paper. " + e.message, { title: "Submission failed" }); }
     setSubmitting(false);
   };
 
@@ -235,7 +237,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
     <div style={{ padding: "16px 16px 32px", maxWidth: 560, margin: "0 auto" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-        <button onClick={() => { if (confirm("Save your progress and exit? You can resume this paper later.")) onExit(); }}
+        <button onClick={async () => { const approved = await confirm({ title: "Save and exit?", message: "Your progress will be kept and you can resume this paper later.", confirmLabel: "Save and exit", tone: "neutral" }); if (approved) onExit(); }}
           style={{ padding: "6px 10px", fontSize: 11, borderRadius: 6, border: `1px solid ${C.bdr}`, background: "transparent", color: C.mid, cursor: "pointer", fontFamily: "inherit" }}>← Save & exit</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{paper.name}</div>

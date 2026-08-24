@@ -4,8 +4,10 @@ import { detectFakeAnswer } from "../lib/marking";
 import { sb, SUPA_URL, SUPA_KEY } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { Btn, Card, Dateline, Deck, Headline, Inp, Kicker, Pill, TA } from "./ui";
+import { useFeedback } from "./Feedback";
 
 export function HodPanel({ user }) {
+  const { notify } = useFeedback();
   const [loading, setLoading] = useState(true);
   const [teachers, setTeachers] = useState([]);
   const [classes, setClasses] = useState([]);
@@ -110,7 +112,7 @@ export function HodPanel({ user }) {
       } });
       setExpandedFlag(null); setFlagNote("");
       setFlags(prev => prev.filter(f => f.id !== flag.id));
-    } catch (e) { console.error("resolveFlag failed", e); alert("Could not save: " + e.message); }
+    } catch (e) { console.error("resolveFlag failed", e); notify("Could not save the marking review. " + e.message, { title: "Review not saved" }); }
     setFlagBusy(null);
   };
 

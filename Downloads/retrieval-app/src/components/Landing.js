@@ -1,22 +1,14 @@
 "use client";
-import { C } from "../lib/theme";
-import { SUPA_URL, SUPA_KEY } from "../lib/supabase";
+import { SUPA_KEY, SUPA_URL } from "../lib/supabase";
 import { sessionId } from "../lib/anonSession";
 import { SCHOOL_ANNUAL_PRICE_LABEL } from "../lib/plans";
-
-// Public front door (shown at the root when logged out). Two clear paths:
-//   • Log in   — existing students & teachers (accounts are provisioned, not open-signup)
-//   • For schools — prospective schools → /pricing (the pilot / quote funnel)
-// Returning users with a saved session skip this and land straight in the app.
-//
-// pupilArrival ({ ref, from }) — set when a pupil clicked a STATIC booklet CTA on
-// interactive-science.com. We swap the hero to pupil-facing copy + a direct "create a
-// free account" path (not the schools pricing page), and emit funnel telemetry so the
-// booklet → signup conversion is measured (the static path was previously untracked).
+import { Icon } from "./Icon";
+import { ProductPreview } from "./ProductPreview";
+import { ProductWalkthrough } from "./ProductWalkthrough";
+import { PublicFooter, PublicHeader } from "./PublicChrome";
 
 const BRAND = "Feynman Education";
 
-// Fire-and-forget funnel telemetry, mirroring embed/practice. Best-effort.
 function emitFunnel(event, data = {}) {
   if (typeof window === "undefined") return;
   try {
@@ -26,127 +18,103 @@ function emitFunnel(event, data = {}) {
       body: JSON.stringify({ event, session_id: sessionId(), ...data }),
       keepalive: true,
     }).catch(() => {});
-  } catch { /* ignore */ }
+  } catch { /* best-effort marketing telemetry */ }
 }
-
 const FEATURES = [
-  { icon: "✍️", title: "Marks written answers", body: "Pupils answer in their own words. The AI marks instantly and fairly — like a teacher would — not just multiple choice." },
-  { icon: "🔁", title: "Spaced retrieval, automatically", body: "Every pupil gets the right questions at the right time, so knowledge actually sticks instead of fading." },
-  { icon: "📊", title: "Dashboards for staff", body: "Teachers, heads of department and leaders see exactly what each class knows — and you get the marking time back." },
+  { icon: "clipboard", title: "Written answers, marked in seconds", body: "Pupils explain science in their own words. Fast checks handle the obvious answers; AI assesses the genuinely open ones against the mark scheme." },
+  { icon: "target", title: "The right practice, at the right time", body: "Spaced retrieval brings weak knowledge back automatically, while teachers can assign focused practice to an individual, group or whole class." },
+  { icon: "chart", title: "A clear next action for teachers", body: "See who needs a nudge, where the class is struggling and which marks need review—without digging through another spreadsheet." },
 ];
 
-export function Landing({ onLogin, pupilArrival }) {
-  const btn = (primary) => ({
-    display: "inline-block", fontSize: 15, fontWeight: 700, padding: "12px 26px", borderRadius: 10,
-    textDecoration: "none", cursor: "pointer", border: primary ? "none" : `1.5px solid ${C.pri}55`,
-    background: primary ? C.pri : "transparent", color: primary ? "#fff" : C.pri, fontFamily: "inherit",
-  });
-
-  // Pupil "create a free account" — measure the conversion, then open the signup tab.
-  // (The booklet_viewed top-of-funnel is recorded on the booklet page itself by
-  // add_funnel_analytics.py, so we only record the conversion here.)
-  const pupilSignup = () => {
-    if (pupilArrival) emitFunnel("signup_clicked", { ref: pupilArrival.ref, from_source: pupilArrival.from });
+function PupilLanding({ onLogin, pupilArrival }) {
+  const signup = () => {
+    emitFunnel("signup_clicked", { ref: pupilArrival.ref, from_source: pupilArrival.from });
     onLogin({ signup: true });
   };
-
-  if (pupilArrival) {
-    return (
-      <div style={{ minHeight: "100dvh", background: C.bg, color: C.txt, fontFamily: "var(--font-plex), -apple-system, sans-serif" }}>
-        <div style={{ borderBottom: `1px solid ${C.bdr}`, background: C.card }}>
-          <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 20px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 16, fontWeight: 800, color: C.txt, letterSpacing: -0.3 }}>Feynman<span style={{ color: C.pri }}> Education</span></span>
-            <button onClick={() => onLogin()} style={{ ...btn(false), fontSize: 13, padding: "8px 16px" }}>Log in</button>
-          </div>
-        </div>
-        <div style={{ background: `linear-gradient(165deg, ${C.priSoft}, transparent)` }}>
-          <div style={{ maxWidth: 1000, margin: "0 auto", padding: "64px 20px 56px", textAlign: "center" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: C.pri, letterSpacing: 0.5, marginBottom: 14 }}>FROM YOUR REVISION BOOKLET</div>
-            <h1 style={{ fontSize: 44, fontWeight: 800, letterSpacing: -1.2, lineHeight: 1.08, margin: "0 auto", maxWidth: 680 }}>Keep it stuck in memory</h1>
-            <p style={{ fontSize: 18, color: C.mid, marginTop: 18, maxWidth: 600, marginLeft: "auto", marginRight: "auto", lineHeight: 1.5 }}>
-              You&rsquo;ve revised it — now make it stick. Create a free account to keep practising in your own words, get instant marked feedback, and have each question come back to you spaced just right.
-            </p>
-            <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 28, flexWrap: "wrap" }}>
-              <button onClick={pupilSignup} style={btn(true)}>Create a free account</button>
-              <button onClick={() => onLogin()} style={btn(false)}>I already have one — log in</button>
+  return (
+    <div className="public-shell">
+      <PublicHeader onLogin={() => onLogin()} />
+      <main id="main-content">
+        <section className="marketing-hero">
+          <div className="public-wrap hero-grid">
+            <div className="hero-copy">
+              <div className="marketing-kicker">Continue from your revision booklet</div>
+              <h1 className="marketing-title">Make what you revised stick.</h1>
+              <p className="marketing-lede">Practise in your own words, get useful feedback straight away and let Feynman bring each question back when your memory needs it.</p>
+              <div className="hero-actions"><button className="public-button large" onClick={signup}>Create a free account <Icon name="arrow" size={16}/></button><button className="public-link-button large" onClick={() => onLogin()}>I already have an account</button></div>
+              <div className="hero-proof"><span><Icon name="check" size={15}/></span> Free to start · Join your teacher’s class with a code</div>
             </div>
-            <div style={{ fontSize: 12.5, color: C.dim, marginTop: 18 }}>Free to start. Got a class code from your teacher? You can join your class after signing in.</div>
+            <ProductPreview compact />
           </div>
-        </div>
-        <div style={{ maxWidth: 1000, margin: "0 auto", padding: "44px 20px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
-            {FEATURES.map((f) => (
-              <div key={f.title} style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 14, padding: 22 }}>
-                <div style={{ fontSize: 24, marginBottom: 10 }}>{f.icon}</div>
-                <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>{f.title}</div>
-                <div style={{ fontSize: 13.5, color: C.mid, lineHeight: 1.5 }}>{f.body}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={{ borderTop: `1px solid ${C.bdr}`, padding: "20px 0", textAlign: "center", fontSize: 12, color: C.dim }}>
-          {BRAND} · A teacher at your school? <a href="/pricing" style={{ color: C.dim }}>See it for schools →</a>
-        </div>
-      </div>
-    );
-  }
+        </section>
+      </main>
+      <PublicFooter />
+    </div>
+  );
+}
+
+export function Landing({ onLogin, pupilArrival }) {
+  if (pupilArrival) return <PupilLanding onLogin={onLogin} pupilArrival={pupilArrival} />;
 
   return (
-    <div style={{ minHeight: "100dvh", background: C.bg, color: C.txt, fontFamily: "var(--font-plex), -apple-system, sans-serif" }}>
-      {/* Nav */}
-      <div style={{ borderBottom: `1px solid ${C.bdr}`, background: C.card }}>
-        <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 20px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 16, fontWeight: 800, color: C.txt, letterSpacing: -0.3 }}>Feynman<span style={{ color: C.pri }}> Education</span></span>
-          <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-            <a href="/pricing" style={{ fontSize: 13, fontWeight: 600, color: C.mid, textDecoration: "none" }}>For schools</a>
-            <button onClick={onLogin} style={{ ...btn(true), fontSize: 13, padding: "8px 16px" }}>Log in</button>
-          </div>
-        </div>
-      </div>
-
-      {/* Hero */}
-      <div style={{ background: `linear-gradient(165deg, ${C.priSoft}, transparent)` }}>
-        <div style={{ maxWidth: 1000, margin: "0 auto", padding: "64px 20px 56px", textAlign: "center" }}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: C.pri, letterSpacing: 0.5, marginBottom: 14 }}>AI-MARKED SCIENCE RETRIEVAL PRACTICE</div>
-          <h1 style={{ fontSize: 44, fontWeight: 800, letterSpacing: -1.2, lineHeight: 1.08, margin: "0 auto", maxWidth: 680 }}>Science revision that marks itself</h1>
-          <p style={{ fontSize: 18, color: C.mid, marginTop: 18, maxWidth: 600, marginLeft: "auto", marginRight: "auto", lineHeight: 1.5 }}>
-            Pupils answer in their own words. {BRAND} marks instantly and fairly, then schedules what each one needs to revisit — so knowledge sticks and your department gets the marking time back.
-          </p>
-          <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 28, flexWrap: "wrap" }}>
-            <button onClick={onLogin} style={btn(true)}>Log in</button>
-            <a href="/pricing" style={btn(false)}>For schools — {SCHOOL_ANNUAL_PRICE_LABEL}/year &amp; a free pilot</a>
-          </div>
-          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 18 }}>
-            Students — log in, or join your class with a code. Teachers — your school sets up your account.
-          </div>
-        </div>
-      </div>
-
-      {/* Features */}
-      <div style={{ maxWidth: 1000, margin: "0 auto", padding: "44px 20px" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
-          {FEATURES.map((f) => (
-            <div key={f.title} style={{ background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 14, padding: 22 }}>
-              <div style={{ fontSize: 24, marginBottom: 10 }}>{f.icon}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>{f.title}</div>
-              <div style={{ fontSize: 13.5, color: C.mid, lineHeight: 1.5 }}>{f.body}</div>
+    <div className="public-shell">
+      <PublicHeader onLogin={onLogin} />
+      <main id="main-content">
+        <section className="marketing-hero">
+          <div className="public-wrap hero-grid">
+            <div className="hero-copy">
+              <div className="marketing-kicker">AI-marked science retrieval</div>
+              <h1 className="marketing-title">Know what pupils know—before the next lesson.</h1>
+              <p className="marketing-lede">Pupils answer in their own words. {BRAND} marks, responds and schedules what each one should revisit, while your dashboard turns the evidence into a manageable next step.</p>
+              <div className="hero-actions">
+                <a className="public-button large" href="/pricing#contact">Start a free school pilot <Icon name="arrow" size={16}/></a>
+                <button className="public-link-button large" onClick={onLogin}>Log in</button>
+              </div>
+              <div className="hero-proof"><span><Icon name="check" size={15}/></span> One whole-school plan · {SCHOOL_ANNUAL_PRICE_LABEL} a year · No card for the pilot</div>
             </div>
-          ))}
-        </div>
-
-        {/* Schools strip */}
-        <div style={{ marginTop: 28, background: `linear-gradient(135deg, ${C.priSoft}, transparent)`, border: `1px solid ${C.pri}33`, borderRadius: 14, padding: "22px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: 17, fontWeight: 700 }}>Bringing it to your school?</div>
-            <div style={{ fontSize: 13.5, color: C.mid, marginTop: 4 }}>One whole-school plan at {SCHOOL_ANNUAL_PRICE_LABEL} a year. Start with a free pilot—no card required.</div>
+            <ProductPreview />
           </div>
-          <a href="/pricing" style={btn(true)}>See the school plan</a>
-        </div>
-      </div>
+        </section>
 
-      <div style={{ borderTop: `1px solid ${C.bdr}`, padding: "20px 0", textAlign: "center", fontSize: 12, color: C.dim }}>
-        {BRAND} · AI-marked science retrieval practice for UK secondary schools
-      </div>
+        <section className="marketing-section" id="product">
+          <div className="public-wrap">
+            <div className="section-eyebrow">Designed around the teacher’s day</div>
+            <h2 className="section-heading">Less data hunting. More useful decisions.</h2>
+            <p className="section-intro">The product keeps pupil practice simple and puts the work that needs human judgement at the top of the teacher’s screen.</p>
+            <ProductWalkthrough />
+            <div className="feature-grid">{FEATURES.map((feature) => <article className="feature-card" key={feature.title}><span className="feature-icon"><Icon name={feature.icon} size={20}/></span><h3>{feature.title}</h3><p>{feature.body}</p></article>)}</div>
+          </div>
+        </section>
+
+        <section className="marketing-section tinted" id="how-it-works">
+          <div className="public-wrap">
+            <div className="section-eyebrow">A closed teaching loop</div>
+            <h2 className="section-heading">From answer to intervention in three steps.</h2>
+            <div className="step-grid">
+              <article className="step-card"><span className="step-number">1</span><h3>Pupils retrieve</h3><p>Short, focused science questions work on a phone, tablet or laptop. Pupils explain rather than guess.</p></article>
+              <article className="step-card"><span className="step-number">2</span><h3>Feynman marks and responds</h3><p>Each answer is checked against the expected science, with concise feedback and teacher review routes for uncertain decisions.</p></article>
+              <article className="step-card"><span className="step-number">3</span><h3>Teachers act</h3><p>The attention queue highlights missing practice, class gaps and marking appeals, with one-click assignments and lesson starters.</p></article>
+            </div>
+          </div>
+        </section>
+
+        <section className="marketing-section">
+          <div className="public-wrap">
+            <div className="section-eyebrow">Ready for school questions</div>
+            <h2 className="section-heading">Clear about AI, data and teacher control.</h2>
+            <p className="section-intro">School leaders should be able to understand what is processed, where judgement sits and how to ask for the information their procurement process needs.</p>
+            <div className="trust-strip">
+              <article className="trust-lead"><h3>A practical trust centre for your school.</h3><p>Read the current data flow, AI provider information, access controls and accessibility approach in one place.</p><a className="public-button" href="/trust">Open trust centre <Icon name="arrow" size={14}/></a></article>
+              <article className="trust-item"><Icon name="shield" size={21}/><b>Teacher oversight</b><span>Appeals and uncertain marks can be reviewed and overturned by staff.</span></article>
+              <article className="trust-item"><Icon name="database" size={21}/><b>Transparent data flow</b><span>We explain which answer and question content reaches the AI provider.</span></article>
+              <article className="trust-item"><Icon name="accessibility" size={21}/><b>Accessible by design</b><span>Keyboard, focus, contrast and responsive behaviour are part of the interface standard.</span></article>
+            </div>
+          </div>
+        </section>
+
+        <section className="marketing-cta"><div className="public-wrap cta-inner"><div><h2>See it with one real class.</h2><p>Run a free pilot before choosing the {SCHOOL_ANNUAL_PRICE_LABEL} whole-school licence.</p></div><a className="public-button large" href="/pricing#contact">Arrange a pilot <Icon name="arrow" size={16}/></a></div></section>
+      </main>
+      <PublicFooter />
     </div>
   );
 }

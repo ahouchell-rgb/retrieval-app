@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { Card, Badge, Bar, Kicker, Headline, Deck, Btn } from "./ui";
+import { useFeedback } from "./Feedback";
 
 /* ClassGaps — the actionable headline of the dashboard: the objectives this
  * class is weakest on, read straight from the objective-mastery spine
@@ -13,6 +14,7 @@ import { Card, Badge, Bar, Kicker, Headline, Deck, Btn } from "./ui";
  * The view is security_invoker, so RLS on responses scopes it to this teacher's
  * own classes — we still pass class_id for the specific class on screen. */
 export function ClassGaps({ cls, onAssign }) {
+  const { notify } = useFeedback();
   const [rows, setRows] = useState(null); // null = loading, [] = none/loaded-empty
   const [err, setErr] = useState(null);
   const [building, setBuilding] = useState(false);
@@ -64,7 +66,7 @@ export function ClassGaps({ cls, onAssign }) {
       };
       const pupil = weak.map(r => section(r, false)).filter(Boolean).join("");
       const teacher = weak.map(r => section(r, true)).filter(Boolean).join("");
-      if (!pupil) { alert("No questions in these topics yet — add some in the question bank first."); setBuilding(false); return; }
+      if (!pupil) { notify("Add questions to these topics in the question bank before building an intervention.", { title: "No questions available", tone: "warning" }); setBuilding(false); return; }
       const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(cls.name)} — intervention</title>
         <style>
           body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1a14;margin:30px;max-width:720px}

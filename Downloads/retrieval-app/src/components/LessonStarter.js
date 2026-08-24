@@ -3,8 +3,10 @@ import { useEffect, useState } from "react";
 import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { Badge, Btn, Card, Headline, Kicker, Pill } from "./ui";
+import { useFeedback } from "./Feedback";
 
 export function LessonStarter({ topics, unlocked, cls, dash, initialTopicId = "", onInitialTopicConsumed }) {
+  const { notify } = useFeedback();
   const [numQs, setNumQs] = useState(5);
   const [lastTopic, setLastTopic] = useState("");
   const [lastTopicQs, setLastTopicQs] = useState([]); // all questions for selected topic
@@ -249,7 +251,7 @@ export function LessonStarter({ topics, unlocked, cls, dash, initialTopicId = ""
       doc.save(`retrieval-${safe}-${generated.length}q.pdf`);
     } catch (e) {
       console.error("PDF download failed:", e);
-      alert("Failed to generate PDF. Please try again.");
+      notify("The lesson-starter PDF could not be generated. Please try again.", { title: "PDF not created" });
     }
   };
 

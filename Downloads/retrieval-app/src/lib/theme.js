@@ -19,7 +19,7 @@ export const C = {
   // Accent (used sparingly for variation — e.g. student "answered" stat)
   acc: "#2857c5", accSoft: "#eaf0ff",
   shadow: "0 18px 55px rgba(20,23,26,0.10)",
-  radius: 8,
+  radius: 12,
   // Fonts
   serif: "var(--font-serif), Georgia, serif",
   sans:  "var(--font-plex), -apple-system, sans-serif",

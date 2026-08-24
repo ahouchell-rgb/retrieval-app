@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { assignmentOutcome, fromLocalInputValue, workStatus } from "../lib/assignments";
 import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
-import { Badge, Btn, Card, Deck, Headline, Inp, Kicker, TA } from "./ui";
+import { Badge, Btn, Card, Deck, Headline, Inp, Kicker, Skeleton, TA } from "./ui";
 
 const EMPTY_DRAFT = {
   title: "", topicId: "", instructions: "", questionCount: 5,
@@ -161,7 +161,7 @@ export function AssignmentsPanel({ user, cls, topics, seed, onConsumed }) {
     return { assignment, perPupil, completed: perPupil.filter(p => p.completedAt).length };
   }), [assignments, studentRows, questionRows, responses, pupils]);
 
-  if (loading) return <Card style={{ padding: 18 }}><div style={{ color: C.dim, fontSize: 12 }}>Loading assignments…</div></Card>;
+  if (loading) return <Card style={{ padding: 20 }} aria-label="Loading assignments"><Skeleton width="34%" height={11}/><Skeleton width="62%" height={25} style={{marginTop:12}}/><Skeleton height={74} style={{marginTop:18}}/><Skeleton height={74} style={{marginTop:10}}/></Card>;
 
   return (
     <div>

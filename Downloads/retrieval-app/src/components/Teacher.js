@@ -21,8 +21,76 @@ import { StudentList } from "./StudentList";
 import { StudentPaperAttempt } from "./StudentPaperAttempt";
 import { TopicSelector } from "./TopicSelector";
 import { Badge, Bar, Btn, Card, Dateline, Deck, Headline, Inp, Kicker, Pill, Section, TA } from "./ui";
+import { GuidedTour } from "./GuidedTour";
+import { Icon } from "./Icon";
+import { useFeedback } from "./Feedback";
+
+const NAV_GROUPS = [
+  { label: "Overview", items: [{ id: "dashboard", label: "Today", icon: "home" }] },
+  { label: "Teaching", items: [{ id: "assignments", label: "Assignments", icon: "clipboard" }, { id: "starter", label: "Lesson starter", icon: "spark" }] },
+  { label: "Assessment", items: [{ id: "review", label: "Marking review", icon: "flag" }, { id: "papers", label: "Papers", icon: "file" }] },
+  { label: "Content", items: [{ id: "topics", label: "Curriculum topics", icon: "layers" }, { id: "questions", label: "Question bank", icon: "book" }] },
+];
+
+function TeacherSidebar({ classes, cls, onSelectClass, onNewClass, tab, onTab, showDept, isMod, onTour }) {
+  const groups = [
+    ...(showDept ? [{ label: "Department", items: [{ id: "hod", label: "Department view", icon: "building" }] }] : []),
+    ...NAV_GROUPS,
+    ...(isMod ? [{ label: "Administration", items: [{ id: "admin", label: "Administration", icon: "settings" }] }] : []),
+  ];
+  return (
+    <aside className="teacher-sidebar" aria-label="Teacher workspace navigation">
+      <div className="teacher-sidebar-head">
+        <div>
+          <label className="teacher-sidebar-label" htmlFor="teacher-class">Current class</label>
+          <div className="teacher-class-row">
+            <select id="teacher-class" className="teacher-class-select" value={cls?.id || ""} onChange={onSelectClass}>
+              <option value="">Select class…</option>
+              {classes.map((item) => <option key={item.id} value={item.id}>{item.name}{item.year_group ? ` · Year ${item.year_group}` : ""}</option>)}
+            </select>
+            <button className="teacher-add-class" onClick={onNewClass} aria-label="Create a new class"><Icon name="plus" size={17}/></button>
+          </div>
+        </div>
+      </div>
+      <nav className="teacher-nav">
+        {groups.map((group) => <div className="teacher-nav-group" key={group.label}><div className="teacher-nav-group-title">{group.label}</div>{group.items.map((item) => <button className={"teacher-nav-button " + (tab === item.id ? "active" : "")} key={item.id} onClick={() => onTab(item.id)} aria-current={tab === item.id ? "page" : undefined}><Icon name={item.icon} size={16}/><span>{item.label}</span></button>)}</div>)}
+      </nav>
+      <button className="teacher-tour-button" onClick={onTour}><Icon name="play" size={15}/> Quick product tour</button>
+    </aside>
+  );
+}
+
+function OnboardingStep({ number, title, body, done, current, action }) {
+  return (
+    <div className={"onboarding-step " + (done ? "done" : current ? "current" : "")}>
+      <span className="onboarding-step-number">{done ? <Icon name="check" size={15}/> : number}</span>
+      <div><h3>{title}</h3><p>{body}</p>{action && !done ? <div className="onboarding-step-action">{action}</div> : null}</div>
+    </div>
+  );
+}
+
+function TeacherOnboarding({ hasClass, hasStudents, hasContent, hasAssignment, hasResponses, onCreateClass, onTopics, onAssignments, onReview, onTour, onDismiss }) {
+  const steps = [
+    { done: hasClass, title: "Create your first class", body: "Choose a year group and give the class a familiar name.", action: <Btn onClick={onCreateClass}>Create class</Btn> },
+    { done: hasStudents, title: "Add your pupils", body: "Share the join code or import a class list from CSV.", action: hasClass ? <span style={{fontSize:11,color:"#65707c"}}>Use the join code or CSV import on Today.</span> : null },
+    { done: hasContent, title: "Choose what pupils can practise", body: "Unlock the curriculum topics you have taught or want to revisit.", action: hasClass ? <Btn v="ghost" onClick={onTopics}>Choose topics</Btn> : null },
+    { done: hasAssignment, title: "Set the first focused assignment", body: "Select a topic and the pupils who need the practice.", action: hasStudents && hasContent ? <Btn v="ghost" onClick={onAssignments}>Create assignment</Btn> : null },
+    { done: hasResponses, title: "Review the first evidence", body: "Use Today to see activity, class gaps and marks needing attention.", action: hasAssignment ? <Btn v="ghost" onClick={onReview}>Open Today</Btn> : null },
+  ];
+  const completed = steps.filter((step) => step.done).length;
+  if (completed === steps.length) return null;
+  const firstOpen = steps.findIndex((step) => !step.done);
+  return (
+    <section className="onboarding-card" aria-labelledby="onboarding-title">
+      <div className="onboarding-head"><div><div className="section-eyebrow">Your first class</div><h2 id="onboarding-title">Get to useful evidence in five steps.</h2><p>Work through this at your own pace. Progress is based on the class you currently have selected.</p></div><div className="onboarding-progress"><div className="onboarding-progress-meta"><span>{completed} of 5 complete</span><button onClick={onDismiss} style={{border:0,background:"transparent",color:"#65707c",fontSize:10,cursor:"pointer"}}>Dismiss</button></div><div className="onboarding-progress-track"><span style={{width:`${completed / 5 * 100}%`}}/></div></div></div>
+      <div className="onboarding-body">{steps.map((step, index) => <OnboardingStep key={step.title} number={index + 1} {...step} current={index === firstOpen}/>)}</div>
+      <div className="onboarding-footer"><span>Not ready to add a real class? Walk through the whole teaching loop with example data.</span><button className="public-link-button" onClick={onTour}><Icon name="play" size={14}/> Explore the guided preview</button></div>
+    </section>
+  );
+}
 
 export function Teacher({ user }) {
+  const { notify } = useFeedback();
   const isMod = isModerator(user);
   // Strict HoD: only an actual Head of Department gets the (self-scoped)
   // department view. Moderators have the Admin panel instead — previously they
@@ -59,6 +127,8 @@ export function Teacher({ user }) {
   const [assignmentSeed, setAssignmentSeed] = useState(null);
   const [queueNotice, setQueueNotice] = useState("");
   const [starterTopicId, setStarterTopicId] = useState("");
+  const [onboardingAssignmentCount, setOnboardingAssignmentCount] = useState(0);
+  const [showGuidedPreview, setShowGuidedPreview] = useState(false);
   // Onboarding panel: persists dismissal in localStorage so it never re-shows once closed.
   // Keyed per-user so a different teacher on the same browser sees their own state.
   const onboardingKey = `onboarding_dismissed_${user.id}`;
@@ -115,7 +185,7 @@ export function Teacher({ user }) {
       if (cls) await loadCls(cls);
     } catch (e) {
       console.error("resolveFlag failed", e);
-      alert("Could not save: " + e.message);
+      notify("Could not save the marking review. " + e.message, { title: "Review not saved" });
     }
     setFlagBusy(null);
   };
@@ -139,15 +209,17 @@ export function Teacher({ user }) {
     // paper-fetch block fails. Fixes ReferenceError that blanked the dashboard.
     let classPaperResps = [];
     try {
-      const [allT, ul, resps, mems, dels, tokens] = await Promise.all([
+      const [allT, ul, resps, mems, dels, tokens, onboardingAssignments] = await Promise.all([
         sb.q("topics", { params: { subject_id: `eq.${c.subject_id}`, select: "*", order: "sort_order.asc" } }),
         sb.q("class_topics", { params: { class_id: `eq.${c.id}`, select: "topic_id,recency_rank" } }),
         sb.q("responses", { params: { class_id: `eq.${c.id}`, select: "*,questions(question_text,model_answer,topic_id,topics(name)),profiles(display_name)" } }),
         sb.q("class_members", { params: { class_id: `eq.${c.id}`, select: "*,profiles(display_name,email)" } }),
         sb.q("lesson_deliveries", { params: { class_id: `eq.${c.id}`, select: "topic_id,taught_at,notes" } }),
         sb.q("parent_tokens", { params: { class_id: `eq.${c.id}`, select: "student_id,token" } }),
+        sb.q("retrieval_assignments", { params: { class_id: `eq.${c.id}`, status: "neq.archived", select: "id", limit: "1" } }).catch(() => []),
       ]);
       setTopics(allT); setUnlocked(new Set(ul.map(t => t.topic_id)));
+      setOnboardingAssignmentCount((onboardingAssignments || []).length);
       setRawResps(resps || []);
       // Bank size per topic — count of non-archived questions (incl. never-attempted),
       // used as the coverage denominator in the Question spread panel. One light query, runs on class load.
@@ -421,7 +493,7 @@ export function Teacher({ user }) {
         const [s] = await sb.q("schools", { method: "POST", body: { name: fv } });
         setSchools(p => [...p, s]); schoolId = s.id;
       }
-      if (!schoolId) { alert("Enter a school name to create your first class."); return; }
+      if (!schoolId) { notify("Enter a school name before creating your first class.", { title: "School name needed", tone: "warning" }); return; }
 
       if (!subjectId && subjects.length > 0) {
         // Pick the subject with the most topics (the one with your question bank)
@@ -437,7 +509,7 @@ export function Teacher({ user }) {
       setClasses(p => [...p, full]); setCls(full); setSetup(null); setCf({ n: "", y: "" }); await loadCls(full);
     } catch (e) {
       console.error(e);
-      alert("Could not create class: " + (e?.message || "unknown error"));
+      notify("Could not create the class. " + (e?.message || "Please try again."), { title: "Class not created" });
     }
   };
 
@@ -601,88 +673,36 @@ export function Teacher({ user }) {
   };
 
   return (
-    <div style={{ maxWidth: 1180, margin: "0 auto", padding: "18px 18px 60px" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 360px) minmax(0, 1fr)", gap: 12, marginBottom: 18, alignItems: "start" }}>
-        <div style={{ display: "flex", gap: 8 }}>
-          <select value={cls?.id || ""} onChange={async e => { const c = classes.find(x => x.id === e.target.value); setCls(c); if (c) await loadCls(c); }}
-            style={{ flex: 1, padding: "10px 12px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 14, outline: "none", minHeight: 40 }}>
-            <option value="">Select class...</option>
-            {classes.map(c => <option key={c.id} value={c.id}>{c.name}{c.year_group ? ` (Y${c.year_group})` : ""}</option>)}
-          </select>
-          <Btn v="ghost" onClick={() => setSetup("class")} style={{ padding: "10px 14px", fontSize: 13, whiteSpace: "nowrap" }}>+ New</Btn>
-        </div>
-        <div style={{ display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2, justifyContent: "flex-end" }}>
-          {[...(showDept ? ["hod"] : []), ...["dashboard", "assignments", "review", "starter", "topics", "questions", "papers"], ...(isMod ? ["admin"] : [])].map(t => <Pill key={t} on={tab === t} onClick={() => setTab(t)} style={t === "admin" ? { borderColor: C.pri, color: tab === t ? C.pri : C.pri } : (t === "hod" ? { borderColor: C.amb, color: tab === t ? C.amb : C.amb } : undefined)}>{t === "starter" ? "Lesson Starter" : t === "admin" ? "Admin" : t === "hod" ? "Department" : t === "papers" ? "Papers" : t === "review" ? "Review marks" : t.charAt(0).toUpperCase() + t.slice(1)}</Pill>)}
-        </div>
-      </div>
+    <div className="teacher-shell">
+      {showGuidedPreview ? <GuidedTour onClose={() => setShowGuidedPreview(false)} /> : null}
+      <TeacherSidebar
+        classes={classes}
+        cls={cls}
+        onSelectClass={async (event) => { const next = classes.find((item) => item.id === event.target.value); setCls(next || null); if (next) await loadCls(next); }}
+        onNewClass={() => setSetup("class")}
+        tab={tab}
+        onTab={setTab}
+        showDept={showDept}
+        isMod={isMod}
+        onTour={() => setShowGuidedPreview(true)}
+      />
+      <main className="teacher-main">
 
-      {/* ── First-run onboarding ──
-          Shown only to teachers who have no classes yet, or whose only class has no students yet,
-          or whose class has students but no responses yet. Dismissible — the dismissal persists
-          across sessions via localStorage. New teachers get a 3-step nudge; existing teachers
-          who already have an active class never see this. */}
-      {!loading && !onboardingDismissed && tab === "dashboard" && (() => {
-        const hasClass = classes.length > 0;
-        const hasStudents = hasClass && dash && dash.students.length > 0;
-        const hasResponses = hasStudents && dash && dash.tR > 0;
-        // Three states. We only render if there is still something to do.
-        if (hasResponses) return null;
-
-        const Step = ({ n, title, body, action, done }) => (
-          <div style={{ display: "flex", gap: 12, padding: "12px 0", alignItems: "flex-start", borderTop: n === 1 ? "none" : `1px solid ${C.bdr}` }}>
-            <div style={{
-              minWidth: 24, height: 24, borderRadius: 99,
-              background: done ? C.grn : (action ? C.pri : C.card2),
-              color: done || action ? "#fff" : C.mid,
-              fontSize: 12, fontWeight: 700,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              flexShrink: 0, marginTop: 2,
-            }}>{done ? "✓" : n}</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: done ? C.mid : C.txt, textDecoration: done ? "line-through" : "none" }}>{title}</div>
-              <div style={{ fontSize: 12, color: C.dim, marginTop: 2, lineHeight: 1.5 }}>{body}</div>
-              {action && !done && <div style={{ marginTop: 8 }}>{action}</div>}
-            </div>
-          </div>
-        );
-
-        return (
-          <Card style={{ padding: 16, marginBottom: 14, background: C.priSoft, borderColor: "rgba(200,54,45,0.25)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4, gap: 8 }}>
-              <div>
-                <div style={{ color: C.txt, fontWeight: 700, fontSize: 14 }}>Welcome to Feynman — let's get you set up</div>
-                <div style={{ color: C.dim, fontSize: 12, marginTop: 2 }}>Three quick steps. Takes about 5 minutes.</div>
-              </div>
-              <button onClick={dismissOnboarding}
-                style={{ padding: "4px 8px", fontSize: 11, borderRadius: 6, border: "none", background: "transparent", color: C.dim, cursor: "pointer", fontFamily: "inherit" }}>
-                Dismiss
-              </button>
-            </div>
-
-            <div style={{ marginTop: 8 }}>
-              <Step n={1} title="Create your first class"
-                body="Pick a year group and give it a name (e.g. 10X1). All 92 topics and 822 questions become available — you choose which to unlock for students later."
-                done={hasClass}
-                action={!hasClass ? <Btn onClick={() => setSetup("class")} style={{ padding: "8px 14px", fontSize: 12 }}>Create class</Btn> : null}
-              />
-              <Step n={2} title="Add students"
-                body={hasClass ? `Share the join code shown on the dashboard, or import a class list from CSV. Both options are below.` : "You'll be able to share a 6-character join code with students, or upload a CSV of names and emails."}
-                done={hasStudents}
-                action={hasClass && !hasStudents ? <span style={{ fontSize: 11, color: C.dim }}>Use the join code or CSV import below ↓</span> : null}
-              />
-              <Step n={3} title="Try the Lesson Starter"
-                body="Generates a 5-question retrieval starter based on what you just taught. Use it as the do-now next lesson — students answer on phones or laptops, you get a class accuracy reading in 3 minutes."
-                done={hasResponses}
-                action={hasStudents && !hasResponses ? <Btn v="ghost" onClick={() => setTab("starter")} style={{ padding: "8px 14px", fontSize: 12 }}>Open Lesson Starter</Btn> : null}
-              />
-            </div>
-
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.bdr}`, fontSize: 11, color: C.dim, lineHeight: 1.5 }}>
-              You can dismiss this any time — once gone, it won't come back.
-            </div>
-          </Card>
-        );
-      })()}
+      {!loading && !onboardingDismissed && tab === "dashboard" ? (
+        <TeacherOnboarding
+          hasClass={classes.length > 0}
+          hasStudents={!!(dash && dash.students.length > 0)}
+          hasContent={unlocked.size > 0}
+          hasAssignment={onboardingAssignmentCount > 0}
+          hasResponses={!!(dash && dash.tR > 0)}
+          onCreateClass={() => setSetup("class")}
+          onTopics={() => setTab("topics")}
+          onAssignments={() => setTab("assignments")}
+          onReview={() => setTab("dashboard")}
+          onTour={() => setShowGuidedPreview(true)}
+          onDismiss={dismissOnboarding}
+        />
+      ) : null}
 
       {setup && (
         <Card style={{ padding: 20, marginBottom: 14 }}>
@@ -1281,7 +1301,7 @@ export function Teacher({ user }) {
             ? <QMgr subjectId={cls.subject_id} userId={user.id} topics={topics} setTopics={setTopics} canPublishShared={isHoD(user) || isModerator(user)} />
             : (
               <div style={{ maxWidth: 560, margin: "20px auto", padding: 24, textAlign: "center", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 12 }}>
-                <div style={{ fontSize: 26, marginBottom: 8 }}>🔒</div>
+                <div style={{ width: 42, height: 42, margin: "0 auto 12px", borderRadius: 10, display: "grid", placeItems: "center", background: C.priSoft, color: C.pri }}><Icon name="lock" size={20}/></div>
                 <div style={{ fontSize: 16, fontWeight: 700, color: C.txt }}>Writing your own questions is included in the School plan</div>
                 <div style={{ fontSize: 13, color: C.mid, marginTop: 8, lineHeight: 1.5 }}>Your current plan includes the full shared question bank. The £800/year School plan also unlocks authoring and editing your own questions. Tap below and we&rsquo;ll be in touch about enabling it for your school.</div>
                 <RequestCore user={user} />
@@ -1292,6 +1312,7 @@ export function Teacher({ user }) {
           {tab === "hod" && showDept && <HodPanel user={user} />}
         </>
       )}
+      </main>
     </div>
   );
 }

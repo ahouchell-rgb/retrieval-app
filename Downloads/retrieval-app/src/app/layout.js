@@ -1,4 +1,6 @@
 import { IBM_Plex_Sans, Source_Serif_4 } from "next/font/google";
+import "./globals.css";
+import { ClientProviders } from "../components/ClientProviders";
 
 const plex = IBM_Plex_Sans({
   subsets: ["latin"],
@@ -16,8 +18,17 @@ const serif = Source_Serif_4({
 });
 
 export const metadata = {
-  title: "Feynman Education — Practice that sticks",
+  title: {
+    default: "Feynman Education — Science practice that sticks",
+    template: "%s — Feynman Education",
+  },
   description: "AI-marked retrieval practice: instant, fair feedback on written answers, with spaced repetition scheduling what each pupil needs to revisit.",
+  metadataBase: new URL("https://retrieval-app.com"),
+  openGraph: {
+    title: "Feynman Education — Science practice that sticks",
+    description: "AI-marked written answers, spaced retrieval and clear teacher actions for UK secondary science.",
+    type: "website",
+  },
 };
 
 // Ensure the layout scales correctly on phones (students practise on mobile).
@@ -30,7 +41,10 @@ export const viewport = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className={`${plex.variable} ${serif.variable}`}>
-      <body style={{ margin: 0, padding: 0, fontFamily: "var(--font-plex), -apple-system, sans-serif", background: "#f4f6f8", color: "#14171a" }}>{children}</body>
+      <body style={{ margin: 0, padding: 0, fontFamily: "var(--font-plex), -apple-system, sans-serif", background: "#f4f6f8", color: "#14171a" }}>
+        <a className="fe-skip-link" href="#main-content">Skip to main content</a>
+        <ClientProviders>{children}</ClientProviders>
+      </body>
     </html>
   );
 }

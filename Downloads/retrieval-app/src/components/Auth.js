@@ -4,6 +4,8 @@ import { sb } from "../lib/supabase";
 import { attachProfile } from "../lib/roles";
 import { C } from "../lib/theme";
 import { Btn, Card, Inp } from "./ui";
+import { Brand } from "./Brand";
+import { Icon } from "./Icon";
 
 /* ─── AUTH ─── */
 // `welcome` (optional): a summary handed off from a public interactive-science
@@ -37,11 +39,17 @@ export function Auth({ onAuth, onBack, welcome, startMode }) {
   };
 
   return (
-    <div style={{ minHeight: "100dvh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: 16, fontFamily: "var(--font-plex), -apple-system, sans-serif" }}>
-      <div style={{ width: "100%", maxWidth: 380 }}>
+    <div className="auth-shell">
+      <aside className="auth-story">
+        <Brand href="/" inverse />
+        <div className="auth-story-copy"><small>Teacher-led retrieval practice</small><h1>Useful evidence, without the marking pile.</h1><p>See what pupils can explain, what needs another pass and where your judgement is needed next.</p><div className="auth-story-list"><div className="auth-story-item"><Icon name="check" size={15}/> Written answers with immediate feedback</div><div className="auth-story-item"><Icon name="check" size={15}/> Spaced practice for every pupil</div><div className="auth-story-item"><Icon name="check" size={15}/> Teacher review for uncertain marks</div></div></div>
+        <div className="auth-story-foot"><a href="/trust">Trust centre</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a></div>
+      </aside>
+      <main className="auth-form-side" id="main-content">
+      <div className="auth-form-wrap">
         {onBack && <button onClick={onBack} style={{ background: "none", border: "none", color: C.dim, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: 14 }}>← Home</button>}
-        <div style={{ textAlign: "center", marginBottom: 36 }}>
-          <div style={{ fontSize: 30, fontWeight: 800, color: C.txt, letterSpacing: -0.5 }}>Feynman<span style={{ color: C.pri }}> Education</span></div>
+        <div style={{ textAlign: "center", marginBottom: 30 }}>
+          <div className="auth-form-brand"><Brand href={null} /></div>
           <div style={{ fontFamily: C.serif, fontStyle: "italic", fontSize: 14, color: C.dim, marginTop: 6 }}>Retrieval practice that sticks</div>
         </div>
         {welcome && (
@@ -52,7 +60,7 @@ export function Auth({ onAuth, onBack, welcome, startMode }) {
             </div>
           </div>
         )}
-        <Card style={{ padding: "28px 24px" }}>
+        <Card className="auth-card" style={{ padding: "28px 24px" }}>
           {mode === "forgot" ? (
             <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 18, fontWeight: 700, color: C.txt }}>Reset your password</div>
@@ -86,6 +94,7 @@ export function Auth({ onAuth, onBack, welcome, startMode }) {
           </div>
         </Card>
       </div>
+      </main>
     </div>
   );
 }

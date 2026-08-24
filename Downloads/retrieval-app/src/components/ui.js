@@ -63,5 +63,14 @@ export const StatTile = ({ label, value, onClick, active, color }) => (
     <div style={{ fontSize: 10, color: C.mid, textTransform: "uppercase", letterSpacing: .5, marginTop: 4 }}>{label}</div>
   </button>
 );
+export const Skeleton = ({ width = "100%", height = 14, style }) => <span aria-hidden="true" className="fe-skeleton" style={{ display: "block", width, height, borderRadius: 7, ...style }} />;
+export const EmptyState = ({ icon, title, body, action, style }) => (
+  <Card style={{ padding: "42px 24px", textAlign: "center", ...style }}>
+    {icon ? <div style={{ width: 42, height: 42, margin: "0 auto 14px", borderRadius: 11, display: "grid", placeItems: "center", background: C.priSoft, color: C.pri }}>{icon}</div> : null}
+    <div style={{ fontFamily: C.serif, fontSize: 20, fontWeight: 700 }}>{title}</div>
+    {body ? <div style={{ maxWidth: 480, margin: "8px auto 0", color: C.mid, fontSize: 13, lineHeight: 1.55 }}>{body}</div> : null}
+    {action ? <div style={{ marginTop: 17 }}>{action}</div> : null}
+  </Card>
+);
 
 /* ─── HoD PANEL ─── */

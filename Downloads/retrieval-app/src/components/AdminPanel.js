@@ -8,8 +8,10 @@ import { CostDashboard } from "./CostDashboard";
 import { FunnelDashboard } from "./FunnelDashboard";
 import { SchoolsPanel } from "./SchoolsPanel";
 import { Badge, Btn, Headline, Inp, Pill, Stat, StatTile } from "./ui";
+import { useFeedback } from "./Feedback";
 
 export function AdminPanel({ user }) {
+  const { confirm, notify } = useFeedback();
   const [loading, setLoading] = useState(true);
   const [teachers, setTeachers] = useState([]);
   const [students, setStudents] = useState([]);
@@ -295,7 +297,7 @@ export function AdminPanel({ user }) {
                   <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${C.bdr}`, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                     {isHoD ? (
                       <>
-                        <Btn v="ghost" onClick={() => { if (confirm(`Demote ${t.display_name} from HoD back to teacher?`)) callManage("set_hod", t.id, { target_id: t.id, promote: false }); }} disabled={busy} style={{ fontSize: 11, padding: "5px 10px", color: C.red, borderColor: "rgba(239,68,68,.3)" }}>
+                        <Btn v="ghost" onClick={async () => { const approved = await confirm({ title: "Demote this Head of Department?", message: `${t.display_name} will return to a teacher role.`, confirmLabel: "Demote to teacher" }); if (approved) callManage("set_hod", t.id, { target_id: t.id, promote: false }); }} disabled={busy} style={{ fontSize: 11, padding: "5px 10px", color: C.red, borderColor: "rgba(239,68,68,.3)" }}>
                           Demote HoD
                         </Btn>
                         <span style={{ fontSize: 11, color: C.mid }}>{teamCount} teacher{teamCount === 1 ? "" : "s"} in dept</span>
@@ -333,7 +335,7 @@ export function AdminPanel({ user }) {
                     ) : (
                       <>
                         <Btn v="ghost" onClick={() => setPwTeacher({ id: t.id, pw: "" })} disabled={busy} style={{ fontSize: 11, padding: "5px 10px" }}>Reset password</Btn>
-                        <Btn v="ghost" onClick={() => { if (confirm(`Permanently delete ${t.display_name || t.email}? This deletes their account and ${tClasses.length} class${tClasses.length === 1 ? "" : "es"} (pupils' accounts are kept). This cannot be undone.`)) callManage("delete_teacher", null, { teacher_id: t.id }); }} disabled={busy} style={{ fontSize: 11, padding: "5px 10px", color: C.red, borderColor: "rgba(239,68,68,.3)" }}>Delete account</Btn>
+                        <Btn v="ghost" onClick={async () => { const approved = await confirm({ title: `Permanently delete ${t.display_name || t.email}?`, message: `This deletes the account and ${tClasses.length} class${tClasses.length === 1 ? "" : "es"}. Pupil accounts are kept. This cannot be undone.`, confirmLabel: "Delete teacher" }); if (approved) callManage("delete_teacher", null, { teacher_id: t.id }); }} disabled={busy} style={{ fontSize: 11, padding: "5px 10px", color: C.red, borderColor: "rgba(239,68,68,.3)" }}>Delete account</Btn>
                       </>
                     )}
                   </div>
@@ -422,7 +424,7 @@ export function AdminPanel({ user }) {
                             return (
                               <div key={cid} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", background: C.bg, border: `1px solid ${C.bdr}`, borderRadius: 6 }}>
                                 <span style={{ flex: 1, fontSize: 12 }}>{cl.name}</span>
-                                <Btn v="ghost" onClick={() => { if (confirm(`Remove ${s.display_name} from ${cl.name}?`)) callManage("remove_from_class", s.id, { class_id: cid }); }} disabled={busy} style={{ fontSize: 11, padding: "4px 10px", color: C.red, borderColor: "rgba(239,68,68,.3)" }}>Remove</Btn>
+                                <Btn v="ghost" onClick={async () => { const approved = await confirm({ title: "Remove pupil from class?", message: `${s.display_name} will be removed from ${cl.name}, but their account will remain.`, confirmLabel: "Remove pupil" }); if (approved) callManage("remove_from_class", s.id, { class_id: cid }); }} disabled={busy} style={{ fontSize: 11, padding: "4px 10px", color: C.red, borderColor: "rgba(239,68,68,.3)" }}>Remove</Btn>
                               </div>
                             );
                           })}
@@ -437,7 +439,7 @@ export function AdminPanel({ user }) {
 
                     {/* Delete */}
                     <div>
-                      <Btn v="ghost" onClick={() => { if (confirm(`Permanently delete ${s.display_name}? This removes the account entirely.`)) callManage("delete_student", s.id); }} disabled={busy} style={{ width: "100%", fontSize: 11, padding: "8px 10px", background: C.redS, color: C.red, borderColor: "rgba(239,68,68,.3)" }}>Delete student account</Btn>
+                      <Btn v="ghost" onClick={async () => { const approved = await confirm({ title: `Permanently delete ${s.display_name}?`, message: "This removes the pupil account entirely and cannot be undone.", confirmLabel: "Delete pupil" }); if (approved) callManage("delete_student", s.id); }} disabled={busy} style={{ width: "100%", fontSize: 11, padding: "8px 10px", background: C.redS, color: C.red, borderColor: "rgba(239,68,68,.3)" }}>Delete student account</Btn>
                     </div>
                   </div>
                 )}
@@ -673,12 +675,13 @@ export function AdminPanel({ user }) {
         if (cacheRows === null && !cacheLoading) loadCache();
 
         const purgeOne = async (id) => {
-          if (!confirm("Delete this cached answer? Future students writing this exact phrasing will be re-checked by the AI.")) return;
+          const approved = await confirm({ title: "Delete this accepted answer?", message: "Future pupils using this exact phrasing will be checked by the AI again.", confirmLabel: "Delete answer" });
+          if (!approved) return;
           setCachePurging(id);
           try {
             await sb.q("accepted_answers", { method: "DELETE", params: { id: `eq.${id}` } });
             setCacheRows(prev => (prev || []).filter(r => r.id !== id));
-          } catch (e) { console.error(e); alert("Purge failed: " + e.message); }
+          } catch (e) { console.error(e); notify("The accepted answer could not be deleted. " + e.message, { title: "Delete failed" }); }
           setCachePurging(null);
         };
 

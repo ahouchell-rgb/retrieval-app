@@ -5,8 +5,10 @@ import { C } from "../lib/theme";
 import { PaperEditor } from "./PaperEditor";
 import { PaperResults } from "./PaperResults";
 import { Btn, Card, Inp } from "./ui";
+import { useFeedback } from "./Feedback";
 
 export function PaperManager({ user, cls, classes, topics, subjectId }) {
+  const { confirm, notify } = useFeedback();
   const [papers, setPapers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("list"); // 'list' | 'paper' | 'results'
@@ -47,12 +49,13 @@ export function PaperManager({ user, cls, classes, topics, subjectId }) {
       setSelectedPaperId(p.id);
       setView("paper");
       await loadPapers();
-    } catch (e) { console.error(e); alert("Could not create paper: " + e.message); }
+    } catch (e) { console.error(e); notify("Could not create the paper. " + e.message, { title: "Paper not created" }); }
     setBusy(false);
   };
 
   const archivePaper = async (id) => {
-    if (!confirm("Archive this paper? Students will no longer see it. You can restore it from the database if needed.")) return;
+    const approved = await confirm({ title: "Archive this paper?", message: "Pupils will no longer see it. The paper can still be restored from the database if needed.", confirmLabel: "Archive paper" });
+    if (!approved) return;
     await sb.q("papers", { method: "PATCH", params: { id: `eq.${id}` }, body: { archived: true } });
     await loadPapers();
   };
