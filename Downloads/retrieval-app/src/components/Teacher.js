@@ -4,7 +4,7 @@ import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { isHoD, isModerator } from "../lib/roles";
 import { planAllows } from "../lib/plans";
-import { STAR_INTERVAL, WEEKLY_TARGET, getWeekBounds } from "../lib/week";
+import { STAR_INTERVAL, WEEKLY_TARGET, activityCountForPeriod, formatWeekRange, getWeekBounds, matchesActivityFilter } from "../lib/week";
 import { AdminPanel } from "./AdminPanel";
 import { AssignmentsPanel } from "./AssignmentsPanel";
 import { BulkUpload } from "./BulkUpload";
@@ -110,13 +110,17 @@ export function Teacher({ user }) {
   const [subId, setSubId] = useState(null);
   const [fv, setFv] = useState("");
   const [cf, setCf] = useState({ n: "", y: "" });
-  const [timePeriod, setTimePeriod] = useState("thisWeek");
+  const [selectedWeek, setSelectedWeek] = useState(0);
+  const [studentActivityWeeks, setStudentActivityWeeks] = useState(0);
+  const [studentActivityFilter, setStudentActivityFilter] = useState("all");
+  const [dashLoading, setDashLoading] = useState(false);
+  const [dashError, setDashError] = useState("");
   const [targetDraft, setTargetDraft] = useState(null);
   const [savingTarget, setSavingTarget] = useState(false);
   const [savingRecency, setSavingRecency] = useState(false);
   const [deliveries, setDeliveries] = useState({}); // topicId → {taught_at, notes}
   const [parentTokens, setParentTokens] = useState({}); // studentId → token UUID
-  const [rawResps, setRawResps] = useState([]); // full response rows for the active class — used by CSV export
+  const [rawResps, setRawResps] = useState([]); // latest 12 weeks of response rows — used by dashboard drill-down and CSV export
   const [expandedQuestionStat, setExpandedQuestionStat] = useState(null); // question_id with wrong answers panel open
   const [topicBank, setTopicBank] = useState({}); // topic_id → count of non-archived questions (coverage denominator)
   const [expandedSpread, setExpandedSpread] = useState(null); // topic_id with per-student spread panel open
@@ -208,11 +212,15 @@ export function Teacher({ user }) {
     // Declared at function top so dashboard fold-in below always has it in scope, even if the
     // paper-fetch block fails. Fixes ReferenceError that blanked the dashboard.
     let classPaperResps = [];
+    setDashLoading(true);
+    setDashError("");
+    setDash(null);
     try {
+      const oldestOverviewWeek = getWeekBounds(11).start.toISOString();
       const [allT, ul, resps, mems, dels, tokens, onboardingAssignments] = await Promise.all([
         sb.q("topics", { params: { subject_id: `eq.${c.subject_id}`, select: "*", order: "sort_order.asc" } }),
         sb.q("class_topics", { params: { class_id: `eq.${c.id}`, select: "topic_id,recency_rank" } }),
-        sb.q("responses", { params: { class_id: `eq.${c.id}`, select: "*,questions(question_text,model_answer,topic_id,topics(name)),profiles(display_name)" } }),
+        sb.qAll("responses", { params: { class_id: `eq.${c.id}`, answered_at: `gte.${oldestOverviewWeek}`, select: "*,questions(question_text,model_answer,topic_id,topics(name)),profiles!responses_student_id_fkey(display_name)", order: "answered_at.desc,id.desc" } }),
         sb.q("class_members", { params: { class_id: `eq.${c.id}`, select: "*,profiles(display_name,email)" } }),
         sb.q("lesson_deliveries", { params: { class_id: `eq.${c.id}`, select: "topic_id,taught_at,notes" } }),
         sb.q("parent_tokens", { params: { class_id: `eq.${c.id}`, select: "student_id,token" } }),
@@ -247,24 +255,38 @@ export function Teacher({ user }) {
 
       // Pre-calculate 12 week boundaries for history
       const weekBounds = Array.from({ length: 12 }, (_, i) => getWeekBounds(i));
+      const weeklyStats = weekBounds.map((bounds, weeksAgo) => ({
+        weeksAgo,
+        label: weeksAgo === 0 ? "This week" : weeksAgo === 1 ? "Last week" : `${weeksAgo} weeks ago`,
+        range: formatWeekRange(bounds.start, bounds.end),
+        total: 0,
+        correct: 0,
+      }));
 
       resps.forEach(r => {
+        const d = new Date(r.answered_at);
+        const isFlagged = r.ai_feedback && r.ai_feedback.startsWith("FLAGGED:");
+        const weekIndex = weekBounds.findIndex(bounds => d >= bounds.start && d <= bounds.end);
+        if (!isFlagged && weekIndex >= 0) {
+          weeklyStats[weekIndex].total++;
+          if (r.is_correct) weeklyStats[weekIndex].correct++;
+        }
         if (sm[r.student_id]) {
-          sm[r.student_id].t++;
-          if (r.is_correct) sm[r.student_id].c++;
-          const isFlagged = r.ai_feedback && r.ai_feedback.startsWith("FLAGGED:");
           if (isFlagged) sm[r.student_id].flagged++;
-          const d = new Date(r.answered_at);
+          else {
+            sm[r.student_id].t++;
+            if (r.is_correct) sm[r.student_id].c++;
+          }
           if (d >= thisWeekBounds.start && d <= thisWeekBounds.end && !isFlagged) {
             sm[r.student_id].weekValid++;
           }
         }
-        if (!r.is_correct && r.questions && new Date(r.answered_at) >= twoWeeksAgo) {
+        if (!isFlagged && !r.is_correct && r.questions && d >= twoWeeksAgo) {
           const k = r.questions.question_text;
           if (!mis[k]) mis[k] = { q: k, topic: r.questions.topics?.name || "", n: 0, ans: [] };
           mis[k].n++; if (mis[k].ans.length < 3) mis[k].ans.push(r.student_answer);
         }
-        if (r.questions?.topics?.name) {
+        if (!isFlagged && r.questions?.topics?.name) {
           const topicId = r.questions.topic_id || r.questions.topics.name;
           if (!tp[topicId]) tp[topicId] = { id: r.questions.topic_id || null, name: r.questions.topics.name, t: 0, c: 0 };
           tp[topicId].t++; if (r.is_correct) tp[topicId].c++;
@@ -278,31 +300,21 @@ export function Teacher({ user }) {
           const wResps = sResps.filter(r => { const d = new Date(r.answered_at); return d >= wb.start && d <= wb.end; });
           const valid = wResps.filter(r => !(r.ai_feedback && r.ai_feedback.startsWith("FLAGGED:"))).length;
           const label = i === 0 ? "This wk" : i === 1 ? "Last wk" : `${i}w ago`;
-          return { valid, label, weeksAgo: i };
+          return { valid, label, weeksAgo: i, range: formatWeekRange(wb.start, wb.end) };
         });
       });
-
-      // Period stats
-      const periodResps = (weeksBack) => {
-        const cutoff = weeksBack === null ? new Date(0) : getWeekBounds(weeksBack - 1).start;
-        return resps.filter(r => new Date(r.answered_at) >= cutoff);
-      };
-      const mkPeriod = (rs) => ({ total: rs.length, correct: rs.filter(r => r.is_correct).length });
-
-      const thisMonday = thisWeekBounds.start;
-      const lastMonday = new Date(thisMonday); lastMonday.setDate(thisMonday.getDate() - 7);
 
       // Fetch paper responses from class members so we can fold them into each student's
       // weekValid count — papers reward students the same as retrieval (1 unit per non-flagged answer).
       // classPaperResps is declared at the top of loadCls, so it's already in scope here.
       try {
-        const sixtyAgo = new Date(); sixtyAgo.setDate(sixtyAgo.getDate() - 60);
+        const oldestOverviewWeek = weekBounds[weekBounds.length - 1].start;
         const classAttempts = await sb.q("paper_attempts", {
           params: {
             class_id: `eq.${c.id}`,
             mode: `eq.full`,
             select: "id,student_id",
-            started_at: `gte.${sixtyAgo.toISOString()}`,
+            started_at: `gte.${oldestOverviewWeek.toISOString()}`,
           },
         }) || [];
         if (classAttempts.length > 0) {
@@ -312,7 +324,7 @@ export function Teacher({ user }) {
           const prs = await sb.q("paper_responses", {
             params: {
               attempt_id: `in.(${ids.join(",")})`,
-              answered_at: `gte.${sixtyAgo.toISOString()}`,
+              answered_at: `gte.${oldestOverviewWeek.toISOString()}`,
               flagged: "eq.false",
               select: "attempt_id,answered_at,marks_awarded",
             },
@@ -334,8 +346,10 @@ export function Teacher({ user }) {
         const wi = weekBounds.findIndex(wb => d >= wb.start && d <= wb.end);
         if (wi >= 0 && sm[r.student_id].weeklyHistory && sm[r.student_id].weeklyHistory[wi]) {
           sm[r.student_id].weeklyHistory[wi].valid++;
+          weeklyStats[wi].total++;
+          if ((r.marks_awarded || 0) > 0) weeklyStats[wi].correct++;
         }
-        // Also bump the all-time totals so the headline numbers reflect paper effort.
+        // Also bump the 12-week totals so the headline numbers reflect paper effort.
         sm[r.student_id].t++;
         if ((r.marks_awarded || 0) > 0) sm[r.student_id].c++;
       });
@@ -353,14 +367,17 @@ export function Teacher({ user }) {
         }) || [];
       } catch (e) { console.error("flag fetch failed", e); }
 
+      const twelveWeekTotal = weeklyStats.reduce((sum, week) => sum + week.total, 0);
+      const twelveWeekCorrect = weeklyStats.reduce((sum, week) => sum + week.correct, 0);
       setDash({
-        tR: resps.length, tC: resps.filter(r => r.is_correct).length,
+        tR: twelveWeekTotal, tC: twelveWeekCorrect,
         clsTarget,
         recency: ul.filter(t => t.recency_rank).map(t => ({ topicId: t.topic_id, rank: t.recency_rank })).sort((a, b) => a.rank - b.rank),
-        thisWeek: mkPeriod(resps.filter(r => new Date(r.answered_at) >= thisMonday)),
-        lastWeek: mkPeriod(resps.filter(r => { const d = new Date(r.answered_at); return d >= lastMonday && d < thisMonday; })),
-        last4Weeks: mkPeriod(periodResps(4)),
-        allTime: mkPeriod(resps),
+        weeklyStats,
+        thisWeek: weeklyStats[0],
+        lastWeek: weeklyStats[1],
+        last4Weeks: weeklyStats.slice(0, 4).reduce((total, week) => ({ total: total.total + week.total, correct: total.correct + week.correct }), { total: 0, correct: 0 }),
+        allTime: { total: twelveWeekTotal, correct: twelveWeekCorrect },
         students: Object.entries(sm).map(([id, d]) => {
           const target = d.targetOverride ?? clsTarget;
           const over = Math.max(0, d.weekValid - target);
@@ -371,7 +388,12 @@ export function Teacher({ user }) {
         mems: mems.length,
         flags,
       });
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error("class overview load failed", e);
+      setDashError(e?.message || "The class overview could not be loaded.");
+    } finally {
+      setDashLoading(false);
+    }
   };
 
   const toggleT = async (tid) => {
@@ -515,6 +537,14 @@ export function Teacher({ user }) {
 
   if (loading) return <div style={{ color: C.mid, padding: 40, textAlign: "center" }}>Loading...</div>;
   const acc = dash && dash.tR > 0 ? Math.round(dash.tC / dash.tR * 100) : 0;
+  const selectedWeekStats = dash?.weeklyStats?.[selectedWeek] || { label: "This week", range: "", total: 0, correct: 0 };
+  const studentActivityPeriodLabel = studentActivityWeeks > 0
+    ? `last ${studentActivityWeeks} weeks`
+    : `${selectedWeekStats.label.toLowerCase()} · ${selectedWeekStats.range}`;
+  const visibleStudentCount = dash?.students?.filter(student => matchesActivityFilter(
+    activityCountForPeriod(student, { selectedWeek, windowWeeks: studentActivityWeeks }),
+    studentActivityFilter,
+  )).length || 0;
 
   // ── CSV export helpers ──────────────────────────────────────────────────
   // Quote a value safely for CSV: wrap in quotes if it contains comma/quote/newline,
@@ -567,8 +597,8 @@ export function Teacher({ user }) {
     });
 
     const header = [
-      "Student name", "Email", "Total answers", "Correct", "Accuracy %",
-      "This week valid", "Class weekly target", "Personal target",
+      "Student name", "Email", "Answers (last 12 weeks)", "Correct (last 12 weeks)", "Accuracy % (last 12 weeks)",
+      `${selectedWeekStats.label} valid (${selectedWeekStats.range})`, "Class weekly target", "Personal target",
       "Flagged attempts", "Weakest topic", "Last active"
     ];
     const rows = [header];
@@ -580,7 +610,7 @@ export function Teacher({ user }) {
         const last = lastActive[s.id] ? new Date(lastActive[s.id]).toISOString().slice(0, 10) : "";
         rows.push([
           s.name, s.email, s.t, s.c, accPct,
-          s.weekValid, dash.clsTarget,
+          activityCountForPeriod(s, { selectedWeek }), dash.clsTarget,
           s.targetOverride ?? "",
           s.flagged,
           studentWeakest[s.id] || "—",
@@ -606,7 +636,7 @@ export function Teacher({ user }) {
         <td>${esc(s.name)}</td>
         <td class="num">${s.t || 0}</td>
         <td class="num" style="color:${accColor};font-weight:600">${acc}%</td>
-        <td class="num">${s.weekValid || 0} / ${dash.clsTarget}</td>
+        <td class="num">${activityCountForPeriod(s, { selectedWeek })} / ${dash.clsTarget}</td>
         <td class="num">${s.flagged ? esc(s.flagged) : ""}</td>
       </tr>`;
     }).join("");
@@ -626,15 +656,15 @@ export function Teacher({ user }) {
         @media print{ @page{margin:14mm} .noprint{display:none} }
       </style></head><body>
       <h1>${esc(cls.name)}</h1>
-      <div class="sub">Retrieval practice report · ${todayStr()}</div>
+      <div class="sub">Retrieval practice report · ${todayStr()} · selected week ${esc(selectedWeekStats.range)}</div>
       <div class="kpis">
         <div class="kpi"><b>${students.length}</b><span>Pupils</span></div>
-        <div class="kpi"><b>${tot}</b><span>Answers</span></div>
-        <div class="kpi"><b>${clsAcc}%</b><span>Class accuracy</span></div>
+        <div class="kpi"><b>${tot}</b><span>Answers · 12 weeks</span></div>
+        <div class="kpi"><b>${clsAcc}%</b><span>Accuracy · 12 weeks</span></div>
       </div>
-      <table><thead><tr><th>Pupil</th><th class="num">Answered</th><th class="num">Accuracy</th><th class="num">This week / target</th><th class="num">Flagged</th></tr></thead>
+      <table><thead><tr><th>Pupil</th><th class="num">Answered · 12 weeks</th><th class="num">Accuracy · 12 weeks</th><th class="num">Selected week / target</th><th class="num">Flagged</th></tr></thead>
       <tbody>${rows}</tbody></table>
-      <div class="foot">Generated by Feynman Education. Accuracy is over all questions answered; spaced repetition re-tests weak areas automatically.</div>
+      <div class="foot">Generated by Feynman Education. Accuracy covers the latest 12 teaching weeks; spaced repetition re-tests weak areas automatically.</div>
       <script>window.onload=function(){window.print()}<\/script>
       </body></html>`;
     const w = window.open("", "_blank");
@@ -688,7 +718,7 @@ export function Teacher({ user }) {
       />
       <main className="teacher-main">
 
-      {!loading && !onboardingDismissed && tab === "dashboard" ? (
+      {!loading && !dashLoading && !dashError && !onboardingDismissed && tab === "dashboard" ? (
         <TeacherOnboarding
           hasClass={classes.length > 0}
           hasStudents={!!(dash && dash.students.length > 0)}
@@ -750,6 +780,25 @@ export function Teacher({ user }) {
         <Card style={{ padding: "48px 20px", textAlign: "center" }}><div style={{ color: C.mid }}>Select or create a class.</div></Card>
       ) : (
         <>
+          {tab === "dashboard" && dashLoading && (
+            <Card style={{ padding: "48px 20px", textAlign: "center" }}>
+              <div style={{ color: C.txt, fontWeight: 700, marginBottom: 6 }}>Loading class overview…</div>
+              <div style={{ color: C.dim, fontSize: 12 }}>Collecting retrieval and paper activity for the last 12 weeks.</div>
+            </Card>
+          )}
+
+          {tab === "dashboard" && !dashLoading && dashError && (
+            <Card style={{ padding: 22, borderColor: C.red, background: C.redS }}>
+              <Kicker tone={C.red}>Overview unavailable</Kicker>
+              <Headline size={24} style={{ marginTop: 7, marginBottom: 6 }}>The class is selected, but its activity could not be loaded.</Headline>
+              <Deck style={{ marginBottom: 14 }}>No data has been lost. Retry the overview; if it still fails, the error is now visible instead of leaving this space blank.</Deck>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <Btn onClick={() => loadCls(cls)}>Retry overview</Btn>
+                <span style={{ color: C.red, fontSize: 11 }}>{dashError}</span>
+              </div>
+            </Card>
+          )}
+
           {tab === "dashboard" && dash && (
             <div>
               {/* Editorial header — dateline + standfirst, matches the HoD panel */}
@@ -784,14 +833,36 @@ export function Teacher({ user }) {
                 </div>
               </div>
 
+              <Card style={{ padding: "14px 16px", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", borderColor: C.bdr }}>
+                <div>
+                  <div style={{ fontSize: 11, color: C.txt, fontWeight: 800, marginBottom: 3 }}>Overview week</div>
+                  <div style={{ fontSize: 11, color: C.dim }}>Headline activity, target checks and comparisons follow this teaching week.</div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <select
+                    aria-label="Overview week"
+                    value={selectedWeek}
+                    onChange={event => setSelectedWeek(Number(event.target.value))}
+                    style={{ minWidth: 230, padding: "9px 11px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer" }}
+                  >
+                    {dash.weeklyStats.map(week => <option key={week.weeksAgo} value={week.weeksAgo}>{week.label} · {week.range}</option>)}
+                  </select>
+                  <Badge color={selectedWeekStats.total ? C.blue : C.dim}>{selectedWeekStats.total} answer{selectedWeekStats.total === 1 ? "" : "s"}</Badge>
+                </div>
+              </Card>
+
               {/* Command centre — decisions lead the dashboard */}
               {(() => {
-                const atRisk = dash.students.filter(s => { const h = s.weeklyHistory; return h && h.length >= 2 && h[0].valid === 0 && h[1].valid === 0; });
-                const pd = dash.thisWeek || { total: 0, correct: 0 };
+                const inactive = dash.students.filter(student => activityCountForPeriod(student, { selectedWeek }) === 0);
+                const belowTarget = dash.students.filter(student => {
+                  const target = student.targetOverride ?? dash.clsTarget;
+                  return activityCountForPeriod(student, { selectedWeek }) < target;
+                });
+                const pd = selectedWeekStats;
                 const pct = pd.total > 0 ? Math.round(pd.correct / pd.total * 100) : 0;
                 const weakestTopic = dash.tp?.[0];
                 const queue = [
-                  ...atRisk.slice(0, 3).map(s => {
+                  ...inactive.slice(0, 3).map(s => {
                     const lastActive = s.weeklyHistory?.findIndex(w => w.valid > 0);
                     const weeksAgo = (lastActive === -1 || lastActive === undefined) ? "Never active" : lastActive === 0 ? "This week" : `${lastActive}w ago`;
                     return { key: `risk-${s.id}`, tone: C.red, title: `${s.name} needs a practice nudge`, detail: `Last active: ${weeksAgo}`, actions: [
@@ -811,7 +882,7 @@ export function Teacher({ user }) {
                       <div style={{ padding: 22 }}>
                         <Badge color={queue.length ? C.red : C.grn}>{queue.length ? `${queue.length} priority item${queue.length === 1 ? "" : "s"}` : "All clear"}</Badge>
                         <Headline size={30} style={{ marginTop: 12, marginBottom: 8 }}>
-                          {queue.length ? `${atRisk.length || dash.flags?.length || 1} thing${(atRisk.length || dash.flags?.length || 1) === 1 ? "" : "s"} need attention before Friday.` : "No students need chasing this week."}
+                          {queue.length ? `${inactive.length || dash.flags?.length || 1} thing${(inactive.length || dash.flags?.length || 1) === 1 ? "" : "s"} need attention.` : `No students need chasing for ${selectedWeekStats.label.toLowerCase()}.`}
                         </Headline>
                         <Deck style={{ maxWidth: 620 }}>
                           Start with the queue, then use the deeper analytics below only when you need the evidence.
@@ -819,9 +890,9 @@ export function Teacher({ user }) {
                         {queueNotice && <div style={{ marginTop: 10, fontSize: 12, color: C.grn, fontWeight: 700 }}>{queueNotice}</div>}
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginTop: 18 }}>
                           {[
-                            { l: "This week", n: pd.total, c: C.txt, h: "answers" },
+                            { l: selectedWeekStats.label, n: pd.total, c: C.txt, h: selectedWeekStats.range },
                             { l: "Accuracy", n: `${pct}%`, c: pct >= 70 ? C.grn : pct >= 50 ? C.amb : pd.total ? C.red : C.dim, h: "current" },
-                            { l: "Below target", n: atRisk.length, c: atRisk.length ? C.red : C.grn, h: "students" },
+                            { l: "Below target", n: belowTarget.length, c: belowTarget.length ? C.red : C.grn, h: "students" },
                             { l: "Open reviews", n: dash.flags?.length || 0, c: dash.flags?.length ? C.amb : C.grn, h: "marks" },
                           ].map(m => (
                             <div key={m.l} style={{ background: C.bg, border: `1px solid ${C.bdrSoft}`, borderRadius: 8, padding: 13 }}>
@@ -954,19 +1025,10 @@ export function Teacher({ user }) {
               <div style={{ marginBottom: 22 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
                   <Kicker tone={C.dim}>Class · activity</Kicker>
-                </div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-                  {[
-                    { k: "thisWeek", l: "This week" },
-                    { k: "lastWeek", l: "Last week" },
-                    { k: "last4Weeks", l: "Last 4 weeks" },
-                    { k: "allTime", l: "All time" },
-                  ].map(({ k, l }) => (
-                    <Pill key={k} on={timePeriod === k} onClick={() => setTimePeriod(k)} style={{ fontSize: 12, padding: "6px 12px" }}>{l}</Pill>
-                  ))}
+                  <span style={{ color: C.mid, fontSize: 12, fontWeight: 700 }}>{selectedWeekStats.label} · {selectedWeekStats.range}</span>
                 </div>
                 {(() => {
-                  const pd = dash[timePeriod] || dash.thisWeek;
+                  const pd = selectedWeekStats;
                   const pct = pd.total > 0 ? Math.round(pd.correct / pd.total * 100) : 0;
                   const metrics = [
                     { n: pd.total, l: "Answered", c: C.txt },
@@ -983,12 +1045,13 @@ export function Teacher({ user }) {
                           </div>
                         ))}
                       </div>
-                      {timePeriod === "thisWeek" && dash.lastWeek?.total > 0 && (() => {
-                        const diff = (dash.thisWeek?.total || 0) - dash.lastWeek.total;
+                      {dash.weeklyStats[selectedWeek + 1]?.total > 0 && (() => {
+                        const comparisonWeek = dash.weeklyStats[selectedWeek + 1];
+                        const diff = pd.total - comparisonWeek.total;
                         const up = diff > 0, same = diff === 0;
-                        return <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: same ? C.dim : up ? C.grn : C.red }}>{same ? "→ Same as" : `${up ? "↑" : "↓"} ${Math.abs(diff)} ${up ? "more" : "fewer"} than`} last week</div>;
+                        return <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: same ? C.dim : up ? C.grn : C.red }}>{same ? "→ Same as" : `${up ? "↑" : "↓"} ${Math.abs(diff)} ${up ? "more" : "fewer"} than`} the preceding week</div>;
                       })()}
-                      <div style={{ marginTop: 10, fontSize: 11, color: C.dim }}>All time · {dash.tR} answered · {dash.tC} correct · {acc}% accuracy</div>
+                      <div style={{ marginTop: 10, fontSize: 11, color: C.dim }}>Last 12 weeks · {dash.tR} answered · {dash.tC} correct · {acc}% accuracy</div>
                     </>
                   );
                 })()}
@@ -1004,9 +1067,36 @@ export function Teacher({ user }) {
               <div style={{ marginTop: 26, marginBottom: 2, fontSize: 10, fontWeight: 700, letterSpacing: ".16em", textTransform: "uppercase", color: C.dim }}>Insights</div>
 
 
-              <Section label="Students" teaser={`${dash.students.length} enrolled · ${timePeriod === "thisWeek" ? "this week" : timePeriod === "lastWeek" ? "last week" : timePeriod === "last4Weeks" ? "last 4 weeks" : "all time"}`}>
+              <Section label="Pupil activity" teaser={`${visibleStudentCount} of ${dash.students.length} shown · ${studentActivityPeriodLabel}`}>
+                <div style={{ display: "flex", alignItems: "end", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                  <label style={{ display: "grid", gap: 5, minWidth: 220, flex: "1 1 220px" }}>
+                    <span style={{ color: C.dim, fontSize: 10, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase" }}>Activity period</span>
+                    <select
+                      aria-label="Pupil activity period"
+                      value={studentActivityWeeks}
+                      onChange={event => setStudentActivityWeeks(Number(event.target.value))}
+                      style={{ padding: "9px 10px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}
+                    >
+                      <option value={0}>Selected week · {selectedWeekStats.range}</option>
+                      {[2, 3, 4, 6, 8, 12].map(weeks => <option key={weeks} value={weeks}>Last {weeks} weeks</option>)}
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 5, minWidth: 190, flex: "0 1 210px" }}>
+                    <span style={{ color: C.dim, fontSize: 10, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase" }}>Show pupils</span>
+                    <select
+                      aria-label="Filter pupils by activity"
+                      value={studentActivityFilter}
+                      onChange={event => setStudentActivityFilter(event.target.value)}
+                      style={{ padding: "9px 10px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}
+                    >
+                      <option value="all">All pupils</option>
+                      <option value="active">With activity</option>
+                      <option value="inactive">No activity</option>
+                    </select>
+                  </label>
+                </div>
                 {dash.students.length === 0 ? <div style={{ color: C.dim, fontSize: 13 }}>No students yet. Share the join code above.</div> :
-                  <StudentList students={dash.students} cls={cls} clsTarget={dash.clsTarget} timePeriod={timePeriod} onRefresh={() => loadCls(cls)} parentTokens={parentTokens} onGenerateToken={generateParentToken} onRevokeToken={revokeParentToken} />}
+                  <StudentList students={dash.students} cls={cls} clsTarget={dash.clsTarget} selectedWeek={selectedWeek} activityWindowWeeks={studentActivityWeeks} activityFilter={studentActivityFilter} onRefresh={() => loadCls(cls)} parentTokens={parentTokens} onGenerateToken={generateParentToken} onRevokeToken={revokeParentToken} />}
               </Section>
 
               <Section label="Top Misconceptions" teaser={dash.mis.length ? `${dash.mis.length} recurring` : "No data yet"}>

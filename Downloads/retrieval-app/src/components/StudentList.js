@@ -2,9 +2,10 @@
 import { useState } from "react";
 import { SUPA_KEY, SUPA_URL, sb } from "../lib/supabase";
 import { C } from "../lib/theme";
+import { activityCountForPeriod, matchesActivityFilter } from "../lib/week";
 import { Btn, Inp } from "./ui";
 
-export function StudentList({ students, cls, clsTarget, timePeriod = "thisWeek", onRefresh, parentTokens = {}, onGenerateToken, onRevokeToken }) {
+export function StudentList({ students, cls, clsTarget, selectedWeek = 0, activityWindowWeeks = 0, activityFilter = "all", onRefresh, parentTokens = {}, onGenerateToken, onRevokeToken }) {
   const [expanded, setExpanded] = useState(null);
   const [newPw, setNewPw] = useState("");
   const [renaming, setRenaming] = useState(null); // studentId being renamed
@@ -54,25 +55,25 @@ export function StudentList({ students, cls, clsTarget, timePeriod = "thisWeek",
     setBusy(false);
   };
 
-  // Per-student completion for the selected activity period (driven by the Class · activity toggle).
-  // This week = weekValid (includes papers, matches the headline). Other periods read the
-  // papers-folded 12-week history. All time shows a plain total — a weekly target is meaningless there.
-  const periodValidOf = (s) => {
-    const h = s.weeklyHistory || [];
-    if (timePeriod === "allTime") return s.t;
-    if (timePeriod === "last4Weeks") return (h[0]?.valid || 0) + (h[1]?.valid || 0) + (h[2]?.valid || 0) + (h[3]?.valid || 0);
-    if (timePeriod === "lastWeek") return h[1]?.valid || 0;
-    return s.weekValid;
-  };
+  // A zero-week window means the exact week selected in the overview. Positive
+  // windows are rolling periods from the current week (last 2/3/4/etc weeks).
+  const periodValidOf = (student) => activityCountForPeriod(student, { selectedWeek, windowWeeks: activityWindowWeeks });
+  const visibleStudents = students
+    .filter(student => matchesActivityFilter(periodValidOf(student), activityFilter))
+    .sort((a, b) => periodValidOf(b) - periodValidOf(a) || a.name.localeCompare(b.name));
 
   return (
     <div>
-      {students.slice().sort((a, b) => periodValidOf(b) - periodValidOf(a)).map(s => {
+      {visibleStudents.length === 0 ? (
+        <div style={{ padding: "18px 12px", borderRadius: 8, background: C.card2, color: C.dim, fontSize: 13, textAlign: "center" }}>
+          {activityFilter === "active" ? "No pupils recorded activity in this period." : activityFilter === "inactive" ? "Every pupil recorded some activity in this period." : "No pupils are enrolled in this class yet."}
+        </div>
+      ) : visibleStudents.map(s => {
         const effectiveTarget = s.targetOverride ?? clsTarget;
         const p = s.t > 0 ? Math.round(s.c / s.t * 100) : 0;
         const periodValid = periodValidOf(s);
-        const periodTarget = timePeriod === "allTime" ? null : timePeriod === "last4Weeks" ? effectiveTarget * 4 : effectiveTarget;
-        const hasTarget = periodTarget !== null;
+        const periodTarget = effectiveTarget * (activityWindowWeeks || 1);
+        const hasTarget = true;
         const weekPct = hasTarget && periodTarget > 0 ? Math.min(100, Math.round((periodValid / periodTarget) * 100)) : 0;
         const metTarget = hasTarget && periodValid >= periodTarget;
         const isExpanded = expanded === s.id;
@@ -96,7 +97,7 @@ export function StudentList({ students, cls, clsTarget, timePeriod = "thisWeek",
                     <div style={{ width: `${weekPct}%`, height: "100%", background: metTarget ? C.grn : weekPct >= 50 ? C.amb : C.red, borderRadius: 99, transition: "width .3s" }} />
                   </div>
                 ) : <div style={{ flex: 1 }} />}
-                <span style={{ fontSize: 10, color: C.dim, whiteSpace: "nowrap" }}>{p}% acc all time</span>
+                <span style={{ fontSize: 10, color: C.dim, whiteSpace: "nowrap" }}>{p}% acc · 12 weeks</span>
               </div>
             </button>
 
@@ -105,11 +106,11 @@ export function StudentList({ students, cls, clsTarget, timePeriod = "thisWeek",
               <div style={{ padding: 12, background: C.card, borderRadius: "0 0 8px 8px", borderLeft: `3px solid ${C.bdr}`, borderBottom: `1px solid ${C.bdr}`, borderRight: `1px solid ${C.bdr}` }}>
                 {msg && <div style={{ padding: "8px 10px", borderRadius: 6, marginBottom: 10, fontSize: 12, background: msg.startsWith("Error") ? C.redS : C.grnS, color: msg.startsWith("Error") ? C.red : C.grn }}>{msg}</div>}
 
-                {/* All-time stats */}
+                {/* Twelve-week stats */}
                 <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
                   <div style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: C.card2, textAlign: "center" }}>
                     <div style={{ fontSize: 18, fontWeight: 700, color: C.acc }}>{s.t}</div>
-                    <div style={{ fontSize: 10, color: C.dim }}>All time</div>
+                    <div style={{ fontSize: 10, color: C.dim }}>12 weeks</div>
                   </div>
                   <div style={{ flex: 1, padding: "8px 10px", borderRadius: 8, background: C.card2, textAlign: "center" }}>
                     <div style={{ fontSize: 18, fontWeight: 700, color: C.grn }}>{s.c}</div>
