@@ -70,7 +70,6 @@ export function StudentHome({
   const reviews = home.reviews || [];
   const unreadReviews = reviews.filter(review => !seenReviewIds.has(review.id));
   const nextClass = [...summaries].filter(item => item.remaining > 0).sort((a, b) => b.remaining - a.remaining)[0] || summaries[0];
-  const priorityTask = tasks[0];
 
   return (
     <main className="student-shell student-home" aria-labelledby="student-home-title">
@@ -89,15 +88,32 @@ export function StudentHome({
         </Card>
       ) : classes.length > 0 ? (
         <Card className="student-next-card" style={{ padding: 22, marginBottom: 16, background: C.panel, borderColor: C.panel, color: "#fff" }}>
-          <Kicker color="#93a1b2">Do this next</Kicker>
-          <Headline size={28} style={{ color: "#fff", marginBottom: 7 }}>{priorityTask ? priorityTask.title : nextClass?.remaining ? `${nextClass.remaining} questions in ${nextClass.name}` : "You are on track this week"}</Headline>
+          <Kicker color="#93a1b2">Weekly homework quiz</Kicker>
+          <Headline size={28} style={{ color: "#fff", marginBottom: 7 }}>{nextClass?.remaining ? `${nextClass.name} weekly quiz` : "Weekly homework complete"}</Headline>
           <Deck style={{ color: "#cbd5e1", marginBottom: 18 }}>
-            {priorityTask ? `${priorityTask.className} · ${dueLabel(priorityTask.dueAt)}` : nextClass?.remaining ? "A short adaptive session will mix due reviews, weaker areas and new questions." : "Choose a class for an optional review or revise one of your weaker topics."}
+            {nextClass?.remaining
+              ? `${nextClass.remaining} of ${nextClass.target} questions left this week. Your quiz mixes due reviews, weaker areas and new questions.`
+              : "You have finished this week's required questions. You can still open a class for an optional review."}
           </Deck>
-          <Btn onClick={() => priorityTask ? onOpenTask(priorityTask) : onPickClass(nextClass)} style={{ width: "100%", minHeight: 48, background: "#fff", color: C.panel, borderColor: "#fff" }}>
-            {priorityTask ? (priorityTask.inProgress ? "Resume work" : "Start work") : "Open class"} →
+          <Btn onClick={() => onPickClass(nextClass)} style={{ width: "100%", minHeight: 48, background: "#fff", color: C.panel, borderColor: "#fff" }}>
+            {nextClass?.remaining ? "Start weekly quiz" : "Open optional review"} →
           </Btn>
         </Card>
+      ) : null}
+
+      {summaries.length > 0 ? (
+        <section aria-labelledby="student-classes-title" style={{ marginBottom: 20 }}>
+          <div className="student-section-heading"><div><Kicker>Weekly homework</Kicker><Headline id="student-classes-title" size={20}>Your quizzes</Headline></div><span style={{ color: C.mid, fontSize: 12 }}>This week</span></div>
+          <div className="student-class-grid">
+            {summaries.map(item => (
+              <button key={item.id} className="student-class-card" onClick={() => onPickClass(item)}>
+                <span style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}><span><strong>{item.name}</strong><small>{item.subjects?.name || "Science"}{item.year_group ? ` · Year ${item.year_group}` : ""}</small></span><Badge color={item.metTarget ? C.grn : C.pri}>{item.valid}/{item.target}</Badge></span>
+                <Bar pct={item.target ? item.valid / item.target * 100 : 0} label={`${item.name} weekly quiz progress`} />
+                <span className="student-class-action">{item.metTarget ? "Homework complete · optional review" : `${item.remaining} questions left · start quiz`} →</span>
+              </button>
+            ))}
+          </div>
+        </section>
       ) : null}
 
       {unreadReviews.length > 0 ? (
@@ -123,23 +139,8 @@ export function StudentHome({
 
       {tasks.length > 0 ? (
         <section aria-labelledby="student-work-title" style={{ marginBottom: 20 }}>
-          <div className="student-section-heading"><div><Kicker>Assignments and papers</Kicker><Headline id="student-work-title" size={20}>Your work</Headline></div><Badge color={C.pri}>{tasks.length} open</Badge></div>
+          <div className="student-section-heading"><div><Kicker>Teacher-set work</Kicker><Headline id="student-work-title" size={20}>Extra practice</Headline><Deck style={{ marginTop: 4 }}>Complete your weekly quiz first, then use these assignments and tests for extra practice.</Deck></div><Badge color={C.mid}>{tasks.length} open</Badge></div>
           <Card style={{ overflow: "hidden" }}>{tasks.map(task => <TaskRow key={`${task.kind}-${task.id}`} task={task} onOpen={onOpenTask} />)}</Card>
-        </section>
-      ) : null}
-
-      {summaries.length > 0 ? (
-        <section aria-labelledby="student-classes-title" style={{ marginBottom: 20 }}>
-          <div className="student-section-heading"><div><Kicker>Your subjects</Kicker><Headline id="student-classes-title" size={20}>Classes</Headline></div><span style={{ color: C.mid, fontSize: 12 }}>This week</span></div>
-          <div className="student-class-grid">
-            {summaries.map(item => (
-              <button key={item.id} className="student-class-card" onClick={() => onPickClass(item)}>
-                <span style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}><span><strong>{item.name}</strong><small>{item.subjects?.name || "Science"}{item.year_group ? ` · Year ${item.year_group}` : ""}</small></span><Badge color={item.metTarget ? C.grn : C.pri}>{item.valid}/{item.target}</Badge></span>
-                <Bar pct={item.target ? item.valid / item.target * 100 : 0} label={`${item.name} weekly progress`} />
-                <span className="student-class-action">{item.metTarget ? "Target reached · optional review" : `${item.remaining} to go · open class`} →</span>
-              </button>
-            ))}
-          </div>
         </section>
       ) : null}
 
