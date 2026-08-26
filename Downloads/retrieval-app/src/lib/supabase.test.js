@@ -121,3 +121,21 @@ describe("recordMcqResponse", () => {
     });
   });
 });
+
+describe("REST upserts", () => {
+  it("passes the PostgREST conflict target and merge preference", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 201, json: async () => ([{ draft_key: "draft-1" }]) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sb.q("student_drafts", {
+      method: "POST",
+      params: { on_conflict: "user_id,draft_key" },
+      prefer: "resolution=merge-duplicates,return=representation",
+      body: { user_id: "user-1", draft_key: "draft-1", answer_text: "saved work" },
+    });
+
+    const [url, request] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("on_conflict=user_id%2Cdraft_key");
+    expect(request.headers.Prefer).toBe("resolution=merge-duplicates,return=representation");
+  });
+});

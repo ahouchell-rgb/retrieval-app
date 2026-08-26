@@ -16,6 +16,4 @@ Workflow:
 2. When the precondition is met, apply it, then **move the file up** into
    `db/migrations/` and flip its header to `APPLIED (verified <date>)`.
 
-There are currently **no** pending migrations — everything in `db/migrations/` is
-applied (verified 2026-06-18). This directory documents the convention so the next
-not-yet-safe migration has a home.
+There are currently no pending migrations.

@@ -23,6 +23,7 @@ export default function App() {
   const [recovery, setRecovery] = useState(false);   // arrived via a password-reset email link
   const [showAccount, setShowAccount] = useState(false);
   const [showSupport, setShowSupport] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const [welcome, setWelcome] = useState(null);   // arrived from a public interactive-science booklet (widget handoff)
   const [authSignup, setAuthSignup] = useState(false); // open auth on the signup tab (pupil arriving from a booklet)
   const [pupilArrival, setPupilArrival] = useState(null); // { ref, from } — clicked a static booklet CTA
@@ -41,6 +42,17 @@ export default function App() {
     })();
     return () => { alive = false; };
   }, []);
+
+  useEffect(() => {
+    if (!showUserMenu) return undefined;
+    const close = event => {
+      if (event.key === "Escape") setShowUserMenu(false);
+      if (event.type === "pointerdown" && !event.target.closest?.(".app-user-menu-wrap")) setShowUserMenu(false);
+    };
+    document.addEventListener("keydown", close);
+    document.addEventListener("pointerdown", close);
+    return () => { document.removeEventListener("keydown", close); document.removeEventListener("pointerdown", close); };
+  }, [showUserMenu]);
 
   // Deep-link to the login form (e.g. from /pricing) without a hydration mismatch.
   useEffect(() => {
@@ -73,7 +85,7 @@ export default function App() {
     if (ref) setPupilArrival({ ref, from: p.get("from") || null });
   }, []);
 
-  if (restoring) return <div style={{ minHeight: "100dvh", background: C.bg }} />;
+  if (restoring) return <div className="app-boot" aria-label="Opening Feynman Education" aria-busy="true"><Brand/><div className="app-boot-line"><span/><span/><span/></div><p>Opening your workspace…</p></div>;
   if (recovery) return <ResetPassword onDone={() => { setRecovery(false); setShowLogin(true); }} />;
   if (!user) return showLogin
     ? <Auth onAuth={setUser} onBack={() => { setShowLogin(false); setWelcome(null); setAuthSignup(false); }} welcome={welcome} startMode={authSignup ? "signup" : undefined} />
@@ -82,16 +94,18 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100dvh", background: C.bg, fontFamily: "var(--font-plex), -apple-system, sans-serif", color: C.txt }}>
-      <header style={{ borderBottom: "1px solid rgba(255,255,255,.1)", background: C.panel, color: "#fff", padding: "0 18px", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 5px 18px rgba(17,24,32,.12)" }}>
-        <div style={{ maxWidth: teacherSide ? 1440 : 700, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 58, gap: 14 }}>
+      <header className="app-header" style={{ borderBottom: "1px solid rgba(255,255,255,.1)", background: C.panel, color: "#fff", padding: "0 18px", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 5px 18px rgba(17,24,32,.12)" }}>
+        <div className="app-header-inner" style={{ maxWidth: teacherSide ? 1440 : 700, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 58, gap: 14 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
             <Brand href={null} inverse />
             <Badge color={roleColor(user)}>{roleLabel(user)}</Badge>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            <Btn v="ghost" onClick={() => setShowSupport(true)} style={{ padding: "7px 11px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}><Icon name="info" size={14}/> Help</Btn>
-            <Btn v="ghost" onClick={() => setShowAccount(true)} style={{ padding: "7px 11px", minHeight: 34, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}><Icon name="users" size={14}/> Account</Btn>
-            <Btn v="ghost" onClick={() => { sb.auth.out(); setUser(null); }} style={{ padding: "7px 11px", minHeight: 34, fontSize: 12, background: "transparent", color: "#aab6c2", border: "1px solid rgba(255,255,255,0.12)" }}>Log out</Btn>
+          <div className="app-header-actions">
+            <Btn className="app-header-help" v="ghost" onClick={() => setShowSupport(true)} style={{ padding: "7px 11px", minHeight: 36, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}><Icon name="info" size={14}/> Help</Btn>
+            <div className="app-user-menu-wrap">
+              <Btn v="ghost" aria-haspopup="menu" aria-expanded={showUserMenu} onClick={() => setShowUserMenu(open => !open)} style={{ padding: "7px 11px", minHeight: 36, fontSize: 12, background: "rgba(255,255,255,0.08)", color: "#dbe6ef", border: "1px solid rgba(255,255,255,0.16)" }}><Icon name="users" size={14}/> <span className="app-header-account-label">Account</span></Btn>
+              {showUserMenu ? <div className="app-user-menu" role="menu"><div className="app-user-menu-name"><strong>{user.profile?.display_name || user.email || "Your account"}</strong><span>{roleLabel(user)}</span></div><button role="menuitem" onClick={() => { setShowUserMenu(false); setShowAccount(true); }}><Icon name="users" size={16}/><span>Account settings</span></button><button className="app-user-menu-help" role="menuitem" onClick={() => { setShowUserMenu(false); setShowSupport(true); }}><Icon name="info" size={16}/><span>Help and support</span></button><button role="menuitem" onClick={() => { setShowUserMenu(false); sb.auth.out(); setUser(null); }}><Icon name="logout" size={16}/><span>Log out</span></button></div> : null}
+            </div>
           </div>
         </div>
       </header>

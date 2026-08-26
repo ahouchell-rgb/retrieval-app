@@ -72,5 +72,28 @@ export const EmptyState = ({ icon, title, body, action, style }) => (
     {action ? <div style={{ marginTop: 17 }}>{action}</div> : null}
   </Card>
 );
+export const LoadingState = ({ title = "Loading…", body, compact = false, style }) => (
+  <Card aria-busy="true" aria-label={title} style={{ padding: compact ? 18 : "30px 24px", ...style }}>
+    <Skeleton width="28%" height={11}/><Skeleton width="62%" height={compact ? 21 : 28} style={{ marginTop: 12 }}/>
+    {body
+      ? <div style={{ color: C.dim, fontSize: 12, marginTop: 12 }}>{body}</div>
+      : <Skeleton height={compact ? 42 : 72} style={{ marginTop: 16 }}/>
+    }
+  </Card>
+);
+export const ErrorState = ({ title = "Something went wrong", body, onRetry, style }) => (
+  <Card role="alert" style={{ padding: 22, borderLeft: `4px solid ${C.red}`, ...style }}>
+    <Kicker color={C.red}>Needs attention</Kicker><Headline size={22} style={{ marginBottom: 7 }}>{title}</Headline>
+    {body ? <Deck style={{ marginBottom: onRetry ? 14 : 0 }}>{body}</Deck> : null}
+    {onRetry ? <Btn onClick={onRetry}>Try again</Btn> : null}
+  </Card>
+);
+export const DraftSyncStatus = ({ status, lastSavedAt }) => {
+  if (!status || status === "idle") return null;
+  const label = status === "saving" ? "Saving…" : status === "offline" ? "Saved on this device · offline" : "Saved across devices";
+  const tone = status === "offline" ? C.amb : status === "saving" ? C.dim : C.grn;
+  const title = status === "saved" && lastSavedAt ? `Saved at ${new Date(lastSavedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}` : label;
+  return <span role="status" title={title} className="draft-sync-status" style={{ color: tone }}>{status === "saving" ? <span className="draft-sync-pulse"/> : null}{label}</span>;
+};
 
 /* ─── HoD PANEL ─── */

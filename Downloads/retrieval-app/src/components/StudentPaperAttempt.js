@@ -3,9 +3,10 @@ import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import { SUPA_KEY, SUPA_URL, sb } from "../lib/supabase";
 import { C } from "../lib/theme";
+import { useCloudDraft } from "../hooks/useCloudState";
 import { MathInput } from "./MathInput";
 import { PaperManager } from "./PaperManager";
-import { Btn, Card, Skeleton, TA } from "./ui";
+import { Btn, Card, DraftSyncStatus, Skeleton, TA } from "./ui";
 import { useFeedback } from "./Feedback";
 
 export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttempt = false }) {
@@ -79,19 +80,10 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
   const currentQ = questions[qi];
   const existingResp = currentQ ? responses[currentQ.id] : null;
   const draftKey = attempt?.id && currentQ?.id ? `student.paperDraft.${user.id}.${attempt.id}.${currentQ.id}` : null;
-  useEffect(() => {
-    if (!draftKey || existingResp) return;
-    try { setAns(window.localStorage.getItem(draftKey) || ""); } catch { setAns(""); }
-  }, [draftKey, existingResp]);
-  const updateAnswer = value => {
-    setAns(value);
-    if (!draftKey) return;
-    try {
-      if (value) window.localStorage.setItem(draftKey, value);
-      else window.localStorage.removeItem(draftKey);
-    } catch {}
-  };
-  const clearDraft = () => { if (draftKey) try { window.localStorage.removeItem(draftKey); } catch {} };
+  const { status: draftStatus, lastSavedAt: draftSavedAt, clearDraft } = useCloudDraft({
+    userId: user.id, draftKey, value: ans, onRestore: setAns, disabled: !draftKey || !!existingResp || !!lastResult,
+  });
+  const updateAnswer = value => setAns(value);
   // Maths papers get the working-friendly input (symbol pad + live preview).
   // Keyed off the paper's subject marker_profile — the field the server resolves
   // to choose the maths marking overlay, so input and marking stay in step.
@@ -300,6 +292,7 @@ export function StudentPaperAttempt({ user, cls, paperId, onExit, forceNewAttemp
             ) : (
               <TA value={ans} onChange={e => updateAnswer(e.target.value)} rows={Math.max(3, Math.min(8, currentQ.marks * 2))} placeholder="Write your answer here…" disabled={marking} style={{ fontFamily: C.serif, fontSize: 16, lineHeight: 1.65 }} />
             )}
+            <div style={{ minHeight: 22, display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: 6 }}><DraftSyncStatus status={draftStatus} lastSavedAt={draftSavedAt}/></div>
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <Btn onClick={submitAnswer} disabled={!ans.trim() || marking} style={{ flex: 1 }}>{marking ? "Marking…" : "Submit answer"}</Btn>
               {qi < questions.length - 1 && (

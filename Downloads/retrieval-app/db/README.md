@@ -3,7 +3,7 @@
 The schema lives in the Supabase project (`uvzukwoxqhcxaxtzrziy`). These files
 record schema/security changes so they're reviewable and reproducible. Each file
 header states whether it is **APPLIED** or **PENDING**; the table below is the
-index. Status was reconciled against the live database on **2026-06-18** (every
+index. Status was reconciled against the live database on **2026-08-26** (every
 migration listed is applied — see "Replaying on a fresh DB" for the out-of-band
 steps that are deliberately *not* in these files).
 
@@ -49,6 +49,7 @@ psql "$DATABASE_URL" -f db/migrations/<file>.sql
 | `20260821_02_idempotency_stale_claim_recovery.sql` | APPLIED (2026-08-21) | Lets a retry reclaim a marking request abandoned by a terminated worker after five minutes, while preserving normal replay coalescing. |
 | `20260822_01_teacher_assignment_intervention_loop.sql` | APPLIED (2026-08-23) | Adds targeted retrieval assignments and measurable pupil outcomes; marking provenance/review audit fields; scheduled paper instructions, deadlines and attempt limits; supporting RLS, grants and integrity triggers. |
 | `20260823_01_restrict_intervention_rpc.sql` | APPLIED (2026-08-23) | Restores `class_intervention_list` to authenticated/service-only execution after the advisor caught an inherited anonymous grant. |
+| `20260825_01_workspace_continuity.sql` | APPLIED (2026-08-26) | Adds RLS-protected, owner-only pupil answer drafts and notification read state for cross-device continuity. |
 
 ## Replaying on a fresh database
 

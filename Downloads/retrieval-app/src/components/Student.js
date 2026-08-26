@@ -8,11 +8,12 @@ import { sb } from "../lib/supabase";
 import { buildMasterySummary, buildSessionBreakdown, effectiveWeeklyTarget, questionReason, safeLearningFeedback, SESSION_LENGTHS, sortStudentTasks, summariseClassProgress } from "../lib/studentExperience";
 import { C } from "../lib/theme";
 import { STAR_INTERVAL, getWeekBounds } from "../lib/week";
+import { useCloudDraft, useNotificationReads } from "../hooks/useCloudState";
 import { MathInput } from "./MathInput";
 import { StudentHome } from "./StudentHome";
 import { StudentPaperAttempt } from "./StudentPaperAttempt";
 import { TargetedAssignmentAttempt } from "./TargetedAssignmentAttempt";
-import { Badge, Btn, Card, Dateline, Deck, Headline, Pill, Skeleton, TA } from "./ui";
+import { Badge, Btn, Card, Dateline, Deck, DraftSyncStatus, Headline, Pill, Skeleton, TA } from "./ui";
 
 // Small inline icon for a revision resource link. Booklets/PDFs get a book;
 // interactive tools/widgets get a "spark" so the two read differently at a glance.
@@ -33,6 +34,7 @@ export function Student({ user }) {
   const [cls, setCls] = useState(null);
   const [home, setHome] = useState({ loading: true, error: "", classSummaries: [], tasks: [], reviews: [] });
   const [seenReviewIds, setSeenReviewIds] = useState(new Set());
+  const notificationReads = useNotificationReads(user.id);
   const [showPrefs, setShowPrefs] = useState(false);
   const [prefs, setPrefs] = useState({ largeText: false, readingMode: false, reduceMotion: false });
   // Paper-taking state — when set, the page swaps to the paper attempt view
@@ -602,22 +604,10 @@ export function Student({ user }) {
 
   const draftQuestion = currentActiveQs()[qi];
   const draftKey = draftQuestion && cls ? `student.answerDraft.${user.id}.${cls.id}.${draftQuestion.id}` : null;
-  useEffect(() => {
-    if (!draftKey || res) return;
-    try { setAns(window.localStorage.getItem(draftKey) || ""); } catch { setAns(""); }
-  }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const updateAnswer = value => {
-    setAns(value);
-    if (!draftKey) return;
-    try {
-      if (value) window.localStorage.setItem(draftKey, value);
-      else window.localStorage.removeItem(draftKey);
-    } catch {}
-  };
-  const clearAnswerDraft = () => {
-    if (!draftKey) return;
-    try { window.localStorage.removeItem(draftKey); } catch {}
-  };
+  const { status: draftStatus, lastSavedAt: draftSavedAt, clearDraft: clearAnswerDraft } = useCloudDraft({
+    userId: user.id, draftKey, value: ans, onRestore: setAns, disabled: !draftKey || !!res,
+  });
+  const updateAnswer = value => setAns(value);
 
   const selectedTarget = effectiveWeeklyTarget(cls);
 
@@ -754,6 +744,7 @@ export function Student({ user }) {
       try { window.localStorage.setItem(`student.reviewSeen.${user.id}`, JSON.stringify([...next])); } catch {}
       return next;
     });
+    notificationReads.markRead(`student-review:${id}`);
   };
 
   const openHomeTask = async task => {
@@ -778,7 +769,7 @@ export function Student({ user }) {
     showStart={showStart} onShowStart={setShowStart} schoolName={schoolName} onSchoolName={setSchoolName}
     onStartSchool={startSchool} creatingSchool={creatingSchool} createErr={createErr}
     prefs={prefs} onPrefs={setPrefs} showPrefs={showPrefs} onShowPrefs={setShowPrefs}
-    seenReviewIds={seenReviewIds} onMarkReviewRead={markReviewRead}
+    seenReviewIds={new Set([...seenReviewIds, ...[...notificationReads.readIds].filter(id => id.startsWith("student-review:")).map(id => id.slice(15))])} onMarkReviewRead={markReviewRead}
   />;
 
   /* ── Quiz ── */
@@ -1536,6 +1527,7 @@ export function Student({ user }) {
                     {speechError && <div style={{ fontSize: 11, color: C.red, marginTop: 6, textAlign: "center" }}>{speechError}</div>}
                   </>
                 )}
+                <div style={{ minHeight: 22, display: "flex", alignItems: "center", justifyContent: "flex-end", marginTop: 6 }}><DraftSyncStatus status={draftStatus} lastSavedAt={draftSavedAt}/></div>
                 <Btn onClick={submit} disabled={!ans.trim() || marking} style={{ width: "100%", marginTop: 12, padding: "14px 20px" }}>{marking ? "Marking..." : "Submit"}</Btn>
               </>
               )

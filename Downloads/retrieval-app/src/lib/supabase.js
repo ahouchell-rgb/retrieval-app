@@ -90,14 +90,14 @@ export const sb = (() => {
 
   const h = (x = {}) => ({ "Content-Type": "application/json", apikey: SUPA_KEY, Authorization: `Bearer ${token || SUPA_KEY}`, ...x });
 
-  const q = async (tbl, { method = "GET", body, params = {}, single } = {}) => {
+  const q = async (tbl, { method = "GET", body, params = {}, single, prefer } = {}) => {
     await ensureFresh();
     const u = new URL(`${SUPA_URL}/rest/v1/${tbl}`);
     Object.entries(params).forEach(([k, v]) => u.searchParams.set(k, v));
     const send = () => {
       const hd = h();
       if (single) hd["Accept"] = "application/vnd.pgrst.object+json";
-      if (method === "POST" || method === "PATCH") hd["Prefer"] = "return=representation";
+      if (method === "POST" || method === "PATCH") hd["Prefer"] = prefer || "return=representation";
       return fetch(u, { method, headers: hd, body: body ? JSON.stringify(body) : undefined });
     };
     let r = await send();

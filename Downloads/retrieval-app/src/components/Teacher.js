@@ -5,6 +5,8 @@ import { C } from "../lib/theme";
 import { isHoD, isModerator } from "../lib/roles";
 import { planAllows } from "../lib/plans";
 import { STAR_INTERVAL, WEEKLY_TARGET, activityCountForPeriod, formatWeekRange, getWeekBounds, matchesActivityFilter } from "../lib/week";
+import { readTeacherWorkspace, teacherWorkspaceUrl } from "../lib/workspaceState";
+import { useNotificationReads } from "../hooks/useCloudState";
 import { AdminPanel } from "./AdminPanel";
 import { AssignmentsPanel } from "./AssignmentsPanel";
 import { BulkUpload } from "./BulkUpload";
@@ -20,10 +22,11 @@ import { Student } from "./Student";
 import { StudentList } from "./StudentList";
 import { StudentPaperAttempt } from "./StudentPaperAttempt";
 import { TopicSelector } from "./TopicSelector";
-import { Badge, Bar, Btn, Card, Dateline, Deck, Headline, Inp, Kicker, Pill, Section, TA } from "./ui";
+import { Badge, Bar, Btn, Card, Dateline, Deck, EmptyState, ErrorState, Headline, Inp, Kicker, LoadingState, Pill, Section, TA } from "./ui";
 import { GuidedTour } from "./GuidedTour";
 import { Icon } from "./Icon";
 import { useFeedback } from "./Feedback";
+import { TeacherWorkspaceTools } from "./TeacherWorkspaceTools";
 
 const NAV_GROUPS = [
   { label: "Overview", items: [{ id: "dashboard", label: "Today", icon: "home" }] },
@@ -32,30 +35,31 @@ const NAV_GROUPS = [
   { label: "Content", items: [{ id: "topics", label: "Curriculum topics", icon: "layers" }, { id: "questions", label: "Question bank", icon: "book" }] },
 ];
 
-function TeacherSidebar({ classes, cls, onSelectClass, onNewClass, tab, onTab, showDept, isMod, onTour }) {
+function TeacherSidebar({ classes, cls, onSelectClass, onNewClass, tab, onTab, showDept, isMod, onTour, mobileOpen, onMobileClose }) {
   const groups = [
     ...(showDept ? [{ label: "Department", items: [{ id: "hod", label: "Department view", icon: "building" }] }] : []),
     ...NAV_GROUPS,
     ...(isMod ? [{ label: "Administration", items: [{ id: "admin", label: "Administration", icon: "settings" }] }] : []),
   ];
   return (
-    <aside className="teacher-sidebar" aria-label="Teacher workspace navigation">
+    <aside className={`teacher-sidebar ${mobileOpen ? "mobile-open" : ""}`} aria-label="Teacher workspace navigation">
+      <div className="teacher-mobile-nav-head"><strong>Teacher workspace</strong><button onClick={onMobileClose} aria-label="Close teacher navigation"><Icon name="x" size={18}/></button></div>
       <div className="teacher-sidebar-head">
         <div>
           <label className="teacher-sidebar-label" htmlFor="teacher-class">Current class</label>
           <div className="teacher-class-row">
-            <select id="teacher-class" className="teacher-class-select" value={cls?.id || ""} onChange={onSelectClass}>
+            <select id="teacher-class" className="teacher-class-select" value={cls?.id || ""} onChange={event => { onSelectClass(event); onMobileClose(); }}>
               <option value="">Select class…</option>
               {classes.map((item) => <option key={item.id} value={item.id}>{item.name}{item.year_group ? ` · Year ${item.year_group}` : ""}</option>)}
             </select>
-            <button className="teacher-add-class" onClick={onNewClass} aria-label="Create a new class"><Icon name="plus" size={17}/></button>
+            <button className="teacher-add-class" onClick={() => { onNewClass(); onMobileClose(); }} aria-label="Create a new class"><Icon name="plus" size={17}/></button>
           </div>
         </div>
       </div>
       <nav className="teacher-nav">
-        {groups.map((group) => <div className="teacher-nav-group" key={group.label}><div className="teacher-nav-group-title">{group.label}</div>{group.items.map((item) => <button className={"teacher-nav-button " + (tab === item.id ? "active" : "")} key={item.id} onClick={() => onTab(item.id)} aria-current={tab === item.id ? "page" : undefined}><Icon name={item.icon} size={16}/><span>{item.label}</span></button>)}</div>)}
+        {groups.map((group) => <div className="teacher-nav-group" key={group.label}><div className="teacher-nav-group-title">{group.label}</div>{group.items.map((item) => <button className={"teacher-nav-button " + (tab === item.id ? "active" : "")} key={item.id} onClick={() => { onTab(item.id); onMobileClose(); }} aria-current={tab === item.id ? "page" : undefined}><Icon name={item.icon} size={16}/><span>{item.label}</span></button>)}</div>)}
       </nav>
-      <button className="teacher-tour-button" onClick={onTour}><Icon name="play" size={15}/> Quick product tour</button>
+      <button className="teacher-tour-button" onClick={() => { onTour(); onMobileClose(); }}><Icon name="play" size={15}/> Quick product tour</button>
     </aside>
   );
 }
@@ -96,7 +100,9 @@ export function Teacher({ user }) {
   // department view. Moderators have the Admin panel instead — previously they
   // were treated as HoDs and landed on an empty department tab.
   const showDept = isHoD(user);
-  const [tab, setTab] = useState(showDept ? "hod" : "dashboard");
+  const initialWorkspace = typeof window === "undefined" ? {} : readTeacherWorkspace(window.location.search);
+  const initialView = initialWorkspace.view === "hod" && !showDept ? "dashboard" : initialWorkspace.view === "admin" && !isMod ? "dashboard" : initialWorkspace.view;
+  const [tab, setTab] = useState(initialView || (showDept ? "hod" : "dashboard"));
   const [classes, setClasses] = useState([]);
   const [cls, setCls] = useState(null);
   const [topics, setTopics] = useState([]);
@@ -110,9 +116,9 @@ export function Teacher({ user }) {
   const [subId, setSubId] = useState(null);
   const [fv, setFv] = useState("");
   const [cf, setCf] = useState({ n: "", y: "" });
-  const [selectedWeek, setSelectedWeek] = useState(0);
-  const [studentActivityWeeks, setStudentActivityWeeks] = useState(0);
-  const [studentActivityFilter, setStudentActivityFilter] = useState("all");
+  const [selectedWeek, setSelectedWeek] = useState(initialWorkspace.week || 0);
+  const [studentActivityWeeks, setStudentActivityWeeks] = useState(initialWorkspace.activityWindow || 0);
+  const [studentActivityFilter, setStudentActivityFilter] = useState(initialWorkspace.activityFilter || "all");
   const [dashLoading, setDashLoading] = useState(false);
   const [dashError, setDashError] = useState("");
   const [targetDraft, setTargetDraft] = useState(null);
@@ -133,6 +139,8 @@ export function Teacher({ user }) {
   const [starterTopicId, setStarterTopicId] = useState("");
   const [onboardingAssignmentCount, setOnboardingAssignmentCount] = useState(0);
   const [showGuidedPreview, setShowGuidedPreview] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const notificationReads = useNotificationReads(user.id);
   // Onboarding panel: persists dismissal in localStorage so it never re-shows once closed.
   // Keyed per-user so a different teacher on the same browser sees their own state.
   const onboardingKey = `onboarding_dismissed_${user.id}`;
@@ -203,7 +211,12 @@ export function Teacher({ user }) {
         sb.q("schools", {}), sb.q("subjects", {}),
       ]);
       setClasses(c); setSchools(sc); setSubjects(su);
-      if (c.length) { setCls(c[0]); await loadCls(c[0]); }
+      if (c.length) {
+        const requestedClassId = typeof window === "undefined" ? null : readTeacherWorkspace(window.location.search).classId;
+        const initialClass = c.find(item => item.id === requestedClassId) || c[0];
+        setCls(initialClass); await loadCls(initialClass);
+        if (typeof window !== "undefined") window.history.replaceState(null, "", teacherWorkspaceUrl(window.location.href, { classId: initialClass.id, view: tab }));
+      }
     } catch (e) { console.error(e); }
     setLoading(false);
   };
@@ -396,6 +409,38 @@ export function Teacher({ user }) {
     }
   };
 
+  const updateWorkspaceUrl = (patch, { replace = false } = {}) => {
+    if (typeof window === "undefined") return;
+    const nextUrl = teacherWorkspaceUrl(window.location.href, patch);
+    window.history[replace ? "replaceState" : "pushState"](null, "", nextUrl);
+  };
+
+  const navigateTab = (next, options) => {
+    setTab(next);
+    updateWorkspaceUrl({ view: next }, options);
+  };
+
+  const selectClass = async (next, options) => {
+    setCls(next || null);
+    updateWorkspaceUrl({ classId: next?.id || null }, options);
+    if (next) await loadCls(next);
+  };
+
+  useEffect(() => {
+    const restoreFromUrl = () => {
+      const state = readTeacherWorkspace(window.location.search);
+      const nextView = state.view === "hod" && !showDept ? "dashboard" : state.view === "admin" && !isMod ? "dashboard" : state.view;
+      setTab(nextView || (showDept ? "hod" : "dashboard"));
+      setSelectedWeek(state.week);
+      setStudentActivityWeeks(state.activityWindow);
+      setStudentActivityFilter(state.activityFilter);
+      const nextClass = classes.find(item => item.id === state.classId);
+      if (nextClass && nextClass.id !== cls?.id) { setCls(nextClass); loadCls(nextClass); }
+    };
+    window.addEventListener("popstate", restoreFromUrl);
+    return () => window.removeEventListener("popstate", restoreFromUrl);
+  }, [classes, cls?.id, showDept, isMod]); // loadCls always uses the current authenticated teacher context
+
   const toggleT = async (tid) => {
     if (!cls) return;
     try {
@@ -486,7 +531,7 @@ export function Teacher({ user }) {
 
   const openAssignment = ({ topicId = "", studentIds = [], title = "", source = "attention_queue" } = {}) => {
     setAssignmentSeed({ topicId, studentIds, title, source, nonce: Date.now() });
-    setTab("assignments");
+    navigateTab("assignments");
   };
 
   const copyPracticeNudge = async (studentName) => {
@@ -528,14 +573,14 @@ export function Teacher({ user }) {
 
       const [c] = await sb.q("classes", { method: "POST", body: { name: cf.n, school_id: schoolId, teacher_id: user.id, subject_id: subjectId, year_group: parseInt(cf.y) || null } });
       const full = await sb.q("classes", { params: { id: `eq.${c.id}`, select: "*,subjects(name)" }, single: true });
-      setClasses(p => [...p, full]); setCls(full); setSetup(null); setCf({ n: "", y: "" }); await loadCls(full);
+      setClasses(p => [...p, full]); setSetup(null); setCf({ n: "", y: "" }); await selectClass(full);
     } catch (e) {
       console.error(e);
       notify("Could not create the class. " + (e?.message || "Please try again."), { title: "Class not created" });
     }
   };
 
-  if (loading) return <div style={{ color: C.mid, padding: 40, textAlign: "center" }}>Loading...</div>;
+  if (loading) return <div style={{ maxWidth: 760, margin: "28px auto", padding: "0 18px" }}><LoadingState title="Loading teacher workspace" body="Restoring your classes and latest activity."/></div>;
   const acc = dash && dash.tR > 0 ? Math.round(dash.tC / dash.tR * 100) : 0;
   const selectedWeekStats = dash?.weeklyStats?.[selectedWeek] || { label: "This week", range: "", total: 0, correct: 0 };
   const studentActivityPeriodLabel = studentActivityWeeks > 0
@@ -545,6 +590,23 @@ export function Teacher({ user }) {
     activityCountForPeriod(student, { selectedWeek, windowWeeks: studentActivityWeeks }),
     studentActivityFilter,
   )).length || 0;
+  const teacherActions = dash ? [
+    ...dash.students.filter(student => activityCountForPeriod(student, { selectedWeek }) === 0).slice(0, 6).map(student => ({
+      key: `teacher-risk:${cls?.id}:${selectedWeek}:${student.id}`, tone: C.red,
+      title: `${student.name} has no activity`, detail: `${selectedWeekStats.label} · ${selectedWeekStats.range}`,
+      label: "Copy nudge", run: () => copyPracticeNudge(student.name),
+    })),
+    ...(dash.flags || []).slice(0, 6).map(flag => ({
+      key: `teacher-review:${flag.id}`, tone: C.amb,
+      title: `${flag.profiles?.display_name || "A pupil"} appealed a mark`, detail: flag.questions?.question_text || "Mark needs teacher review",
+      label: "Review mark", run: () => navigateTab("review"),
+    })),
+    ...(dash.tp?.[0] ? [{
+      key: `teacher-gap:${cls?.id}:${selectedWeek}:${dash.tp[0].id || dash.tp[0].name}`, tone: C.blue,
+      title: `${dash.tp[0].name} is the weakest topic`, detail: `${dash.tp[0].pct}% accuracy across ${dash.tp[0].t} answers`,
+      label: "Plan starter", run: () => { setStarterTopicId(dash.tp[0].id || ""); navigateTab("starter"); },
+    }] : []),
+  ] : [];
 
   // ── CSV export helpers ──────────────────────────────────────────────────
   // Quote a value safely for CSV: wrap in quotes if it contains comma/quote/newline,
@@ -705,18 +767,26 @@ export function Teacher({ user }) {
   return (
     <div className="teacher-shell">
       {showGuidedPreview ? <GuidedTour onClose={() => setShowGuidedPreview(false)} /> : null}
+      {mobileNavOpen ? <button className="teacher-nav-backdrop" onClick={() => setMobileNavOpen(false)} aria-label="Close teacher navigation"/> : null}
       <TeacherSidebar
         classes={classes}
         cls={cls}
-        onSelectClass={async (event) => { const next = classes.find((item) => item.id === event.target.value); setCls(next || null); if (next) await loadCls(next); }}
+        onSelectClass={async (event) => { const next = classes.find((item) => item.id === event.target.value); await selectClass(next || null); }}
         onNewClass={() => setSetup("class")}
         tab={tab}
-        onTab={setTab}
+        onTab={navigateTab}
         showDept={showDept}
         isMod={isMod}
         onTour={() => setShowGuidedPreview(true)}
+        mobileOpen={mobileNavOpen}
+        onMobileClose={() => setMobileNavOpen(false)}
       />
       <main className="teacher-main">
+      <TeacherWorkspaceTools
+        classes={classes} cls={cls} topics={topics} students={dash?.students || []} actions={teacherActions}
+        readIds={notificationReads.readIds} onMarkRead={notificationReads.markRead} onMarkAllRead={notificationReads.markManyRead}
+        onNavigate={navigateTab} onSelectClass={selectClass} onOpenMobileNav={() => setMobileNavOpen(true)}
+      />
 
       {!loading && !dashLoading && !dashError && !onboardingDismissed && tab === "dashboard" ? (
         <TeacherOnboarding
@@ -726,9 +796,9 @@ export function Teacher({ user }) {
           hasAssignment={onboardingAssignmentCount > 0}
           hasResponses={!!(dash && dash.tR > 0)}
           onCreateClass={() => setSetup("class")}
-          onTopics={() => setTab("topics")}
-          onAssignments={() => setTab("assignments")}
-          onReview={() => setTab("dashboard")}
+          onTopics={() => navigateTab("topics")}
+          onAssignments={() => navigateTab("assignments")}
+          onReview={() => navigateTab("dashboard")}
           onTour={() => setShowGuidedPreview(true)}
           onDismiss={dismissOnboarding}
         />
@@ -777,26 +847,15 @@ export function Teacher({ user }) {
         // Suppress this generic empty state when onboarding is showing —
         // the onboarding panel already gives clear next steps for new teachers.
         (!loading && !onboardingDismissed && classes.length === 0 && tab === "dashboard") ? null :
-        <Card style={{ padding: "48px 20px", textAlign: "center" }}><div style={{ color: C.mid }}>Select or create a class.</div></Card>
+        <EmptyState title="Choose a class" body="Select an existing class or create a new one to open its teacher workspace." action={<Btn onClick={() => setSetup("class")}>Create class</Btn>}/>
       ) : (
         <>
           {tab === "dashboard" && dashLoading && (
-            <Card style={{ padding: "48px 20px", textAlign: "center" }}>
-              <div style={{ color: C.txt, fontWeight: 700, marginBottom: 6 }}>Loading class overview…</div>
-              <div style={{ color: C.dim, fontSize: 12 }}>Collecting retrieval and paper activity for the last 12 weeks.</div>
-            </Card>
+            <LoadingState title="Loading class overview" body="Collecting retrieval and paper activity for the last 12 weeks."/>
           )}
 
           {tab === "dashboard" && !dashLoading && dashError && (
-            <Card style={{ padding: 22, borderColor: C.red, background: C.redS }}>
-              <Kicker tone={C.red}>Overview unavailable</Kicker>
-              <Headline size={24} style={{ marginTop: 7, marginBottom: 6 }}>The class is selected, but its activity could not be loaded.</Headline>
-              <Deck style={{ marginBottom: 14 }}>No data has been lost. Retry the overview; if it still fails, the error is now visible instead of leaving this space blank.</Deck>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <Btn onClick={() => loadCls(cls)}>Retry overview</Btn>
-                <span style={{ color: C.red, fontSize: 11 }}>{dashError}</span>
-              </div>
-            </Card>
+            <ErrorState title="The class overview could not be loaded" body={`No data has been lost. ${dashError}`} onRetry={() => loadCls(cls)}/>
           )}
 
           {tab === "dashboard" && dash && (
@@ -842,7 +901,7 @@ export function Teacher({ user }) {
                   <select
                     aria-label="Overview week"
                     value={selectedWeek}
-                    onChange={event => setSelectedWeek(Number(event.target.value))}
+                    onChange={event => { const week = Number(event.target.value); setSelectedWeek(week); updateWorkspaceUrl({ week }, { replace: true }); }}
                     style={{ minWidth: 230, padding: "9px 11px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 13, fontWeight: 700, fontFamily: "inherit", cursor: "pointer" }}
                   >
                     {dash.weeklyStats.map(week => <option key={week.weeksAgo} value={week.weeksAgo}>{week.label} · {week.range}</option>)}
@@ -873,7 +932,7 @@ export function Teacher({ user }) {
                   ...(dash.flags || []).slice(0, 2).map(f => ({ key: `flag-${f.id}`, tone: C.amb, title: `${f.profiles?.display_name || "Student"} appealed a mark`, detail: f.questions?.question_text || "Open marking flag", actions: [{ label: "Review", run: () => { setExpandedFlag(f.id); setTimeout(() => document.getElementById(`marking-flag-${f.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 0); } }] })),
                   ...(weakestTopic ? [{ key: "weakest", tone: C.blue, title: `${weakestTopic.name} is the weakest topic`, detail: `${weakestTopic.pct}% accuracy across ${weakestTopic.t} answers`, actions: [
                     ...(weakestTopic.id ? [{ label: "Assign", run: () => openAssignment({ topicId: weakestTopic.id, title: `${weakestTopic.name} — targeted practice`, source: "class_gap" }) }] : []),
-                    { label: "Starter", run: () => { setStarterTopicId(weakestTopic.id || ""); setTab("starter"); } },
+                    { label: "Starter", run: () => { setStarterTopicId(weakestTopic.id || ""); navigateTab("starter"); } },
                   ] }] : []),
                 ].slice(0, 4);
                 return (
@@ -1074,7 +1133,7 @@ export function Teacher({ user }) {
                     <select
                       aria-label="Pupil activity period"
                       value={studentActivityWeeks}
-                      onChange={event => setStudentActivityWeeks(Number(event.target.value))}
+                      onChange={event => { const activityWindow = Number(event.target.value); setStudentActivityWeeks(activityWindow); updateWorkspaceUrl({ activityWindow }, { replace: true }); }}
                       style={{ padding: "9px 10px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}
                     >
                       <option value={0}>Selected week · {selectedWeekStats.range}</option>
@@ -1086,7 +1145,7 @@ export function Teacher({ user }) {
                     <select
                       aria-label="Filter pupils by activity"
                       value={studentActivityFilter}
-                      onChange={event => setStudentActivityFilter(event.target.value)}
+                      onChange={event => { const activityFilter = event.target.value; setStudentActivityFilter(activityFilter); updateWorkspaceUrl({ activityFilter }, { replace: true }); }}
                       style={{ padding: "9px 10px", background: C.card, border: `1px solid ${C.bdr}`, borderRadius: 8, color: C.txt, fontSize: 12, fontWeight: 700, fontFamily: "inherit" }}
                     >
                       <option value="all">All pupils</option>

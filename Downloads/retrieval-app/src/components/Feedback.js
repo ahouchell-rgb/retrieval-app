@@ -1,13 +1,13 @@
 "use client";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
 import { Icon } from "./Icon";
+import { useDialogA11y } from "../hooks/useDialogA11y";
 
 const FeedbackContext = createContext(null);
 
 export function FeedbackProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const [dialog, setDialog] = useState(null);
-  const lastFocus = useRef(null);
 
   const dismiss = useCallback((id) => setToasts((items) => items.filter((item) => item.id !== id)), []);
   const notify = useCallback((message, options = {}) => {
@@ -19,7 +19,6 @@ export function FeedbackProvider({ children }) {
   }, [dismiss]);
 
   const confirm = useCallback((options) => new Promise((resolve) => {
-    lastFocus.current = document.activeElement;
     setDialog({
       title: typeof options === "string" ? "Are you sure?" : options.title || "Are you sure?",
       message: typeof options === "string" ? options : options.message,
@@ -32,15 +31,9 @@ export function FeedbackProvider({ children }) {
 
   const finishDialog = useCallback((value) => {
     setDialog((current) => { current?.resolve(value); return null; });
-    window.setTimeout(() => lastFocus.current?.focus?.(), 0);
   }, []);
 
-  useEffect(() => {
-    if (!dialog) return undefined;
-    const onKey = (event) => { if (event.key === "Escape") finishDialog(false); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [dialog, finishDialog]);
+  const dialogRef = useDialogA11y(!!dialog, () => finishDialog(false));
 
   const value = useMemo(() => ({ notify, confirm }), [notify, confirm]);
   return (
@@ -48,7 +41,7 @@ export function FeedbackProvider({ children }) {
       {children}
       <div className="feedback-layer" aria-live="polite">
         <div className="toast-stack">{toasts.map((toast) => <div className={`toast ${toast.tone}`} key={toast.id} role="status"><span className="toast-icon"><Icon name={toast.tone === "success" ? "check" : toast.tone === "warning" ? "warning" : "info"} size={16}/></span><span className="toast-copy"><b>{toast.title}</b><span>{toast.message}</span></span><button className="toast-close" onClick={() => dismiss(toast.id)} aria-label="Dismiss notification"><Icon name="x" size={15}/></button></div>)}</div>
-        {dialog ? <div className="feedback-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) finishDialog(false); }}><div className="feedback-dialog" role="alertdialog" aria-modal="true" aria-labelledby="feedback-dialog-title" aria-describedby="feedback-dialog-copy"><span className="feedback-dialog-icon"><Icon name={dialog.tone === "danger" ? "warning" : "info"} size={20}/></span><h2 id="feedback-dialog-title">{dialog.title}</h2><p id="feedback-dialog-copy">{dialog.message}</p><div className="feedback-dialog-actions"><button className="public-link-button" onClick={() => finishDialog(false)} autoFocus>{dialog.cancelLabel}</button><button className="public-button" onClick={() => finishDialog(true)}>{dialog.confirmLabel}</button></div></div></div> : null}
+        {dialog ? <div className="feedback-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) finishDialog(false); }}><div ref={dialogRef} tabIndex={-1} className="feedback-dialog" role="alertdialog" aria-modal="true" aria-labelledby="feedback-dialog-title" aria-describedby="feedback-dialog-copy"><span className="feedback-dialog-icon"><Icon name={dialog.tone === "danger" ? "warning" : "info"} size={20}/></span><h2 id="feedback-dialog-title">{dialog.title}</h2><p id="feedback-dialog-copy">{dialog.message}</p><div className="feedback-dialog-actions"><button className="public-link-button" onClick={() => finishDialog(false)}>{dialog.cancelLabel}</button><button className="public-button" onClick={() => finishDialog(true)}>{dialog.confirmLabel}</button></div></div></div> : null}
       </div>
     </FeedbackContext.Provider>
   );

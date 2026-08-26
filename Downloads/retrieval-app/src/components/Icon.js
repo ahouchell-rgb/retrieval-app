@@ -25,6 +25,10 @@ const PATHS = {
   eye: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></>,
   database: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></>,
   accessibility: <><circle cx="12" cy="4" r="2"/><path d="M5 8h14M12 6v15M8 21l4-8 4 8"/></>,
+  bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></>,
+  menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>,
+  logout: <><path d="M10 17l5-5-5-5M15 12H3"/><path d="M14 4h5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/></>,
+  cloud: <><path d="M17.5 19H7a5 5 0 1 1 1-9.9A6 6 0 0 1 19.8 11 4 4 0 0 1 17.5 19Z"/></>,
 };
 
 export function Icon({ name, size = 18, strokeWidth = 1.8, title, style }) {

@@ -2,8 +2,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sb } from "../lib/supabase";
 import { C } from "../lib/theme";
+import { useCloudDraft } from "../hooks/useCloudState";
 import { MathInput } from "./MathInput";
-import { Badge, Btn, Card, Dateline, Deck, Headline, Kicker, Skeleton, TA } from "./ui";
+import { Badge, Btn, Card, Dateline, Deck, DraftSyncStatus, Headline, Kicker, Skeleton, TA } from "./ui";
 
 export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
   const [questions, setQuestions] = useState([]);
@@ -41,22 +42,10 @@ export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
   const pct = answered.length ? Math.round((correct / answered.length) * 100) : 0;
   const isMaths = cls?.subjects?.marker_profile === "maths";
   const draftKey = current?.id ? `student.assignmentDraft.${user.id}.${assignment.id}.${current.id}` : null;
-  useEffect(() => {
-    if (!draftKey || result) return;
-    try { setAnswer(window.localStorage.getItem(draftKey) || ""); } catch { setAnswer(""); }
-  }, [draftKey, result]);
-  const updateAnswer = value => {
-    setAnswer(value);
-    if (!draftKey) return;
-    try {
-      if (value) window.localStorage.setItem(draftKey, value);
-      else window.localStorage.removeItem(draftKey);
-    } catch {}
-  };
-  const clearDraft = () => {
-    if (!draftKey) return;
-    try { window.localStorage.removeItem(draftKey); } catch {}
-  };
+  const { status: draftStatus, lastSavedAt: draftSavedAt, clearDraft } = useCloudDraft({
+    userId: user.id, draftKey, value: answer, onRestore: setAnswer, disabled: !draftKey || !!result,
+  });
+  const updateAnswer = value => setAnswer(value);
 
   const remember = (question, verdict) => {
     setAnswered(rows => [...rows, {
@@ -143,6 +132,7 @@ export function TargetedAssignmentAttempt({ assignment, user, cls, onExit }) {
             <TA value={answer} onChange={e => updateAnswer(e.target.value)} disabled={marking || !!result} rows={4} maxLength={2000} placeholder="Write your answer in your own words…" style={{ fontSize: 16, lineHeight: 1.65 }} />
           )}
 
+          {!result && shown.kind !== "mcq" ? <div style={{ minHeight: 22, display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: 6 }}><DraftSyncStatus status={draftStatus} lastSavedAt={draftSavedAt}/></div> : null}
           {!result && shown.kind !== "mcq" && <Btn onClick={submitText} disabled={!answer.trim() || marking} style={{ width: "100%", marginTop: 10 }}>{marking ? "Marking…" : "Check answer"}</Btn>}
 
           {result && (
