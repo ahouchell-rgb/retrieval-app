@@ -10,3 +10,4 @@ supabase/.temp/
 
 # OS cruft
 .DS_Store
+.vercel
