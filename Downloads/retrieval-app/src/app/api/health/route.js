@@ -1,14 +1,14 @@
 // Public checks are deliberately free: they verify that the deployed marking
 // function is reachable without triggering a provider call. A secret-gated deep
-// check verifies Anthropic at most once per 15 minutes.
-import { ANTHROPIC_API_KEY, anthropicMessages, logUsage } from "../../../lib/serverSupa";
+// check verifies OpenAI at most once per 15 minutes.
+import { OPENAI_API_KEY, OPENAI_MARKING_MODEL, openAIResponses, logUsage } from "../../../lib/serverSupa";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const SUPA = process.env.NEXT_PUBLIC_SUPA_URL || "https://uvzukwoxqhcxaxtzrziy.supabase.co";
 const ANON = process.env.NEXT_PUBLIC_SUPA_KEY;
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = OPENAI_MARKING_MODEL;
 const DEEP_TTL_MS = 15 * 60 * 1000;
 let deepCache = null;
 
@@ -38,12 +38,13 @@ async function reachabilityCheck() {
 
 async function deepCheck() {
   if (deepCache && Date.now() - deepCache.at < DEEP_TTL_MS) return { ...deepCache.result, cached: true };
-  if (!ANTHROPIC_API_KEY) return { ok: false, reason: "AI provider is not configured.", check: "deep" };
+  if (!OPENAI_API_KEY) return { ok: false, reason: "AI provider is not configured.", check: "deep" };
   const requestId = crypto.randomUUID();
-  const data = await anthropicMessages({
+  const data = await openAIResponses({
     model: MODEL,
-    max_tokens: 2,
-    messages: [{ role: "user", content: "Reply OK" }],
+    max_output_tokens: 16,
+    input: "Reply OK",
+    reasoning_effort: "minimal",
   });
   const ok = !!data?._telemetry?.success;
   await logUsage("health", null, data?.usage, {

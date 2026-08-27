@@ -1,7 +1,7 @@
-// SERVER-ONLY Supabase + Anthropic helpers for the API routes.
+// SERVER-ONLY Supabase + OpenAI helpers for the API routes.
 //
 // ⚠️ NEVER import this from a client component — it reads the service-role key and
-// the Anthropic key from process.env. Only the Node API routes (server) use it.
+// the OpenAI key from process.env. Only the Node API routes (server) use it.
 //
 // Extracted so the paper-feedforward and parse-paper-docx routes share one copy of
 // the auth / metering / cost-backstop logic instead of duplicating it (the kind of
@@ -12,7 +12,9 @@ import { createHash } from "node:crypto";
 export const SUPA_URL = process.env.NEXT_PUBLIC_SUPA_URL || "https://uvzukwoxqhcxaxtzrziy.supabase.co";
 export const ANON_KEY = process.env.NEXT_PUBLIC_SUPA_KEY;
 export const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+export const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+export const OPENAI_MARKING_MODEL = process.env.OPENAI_MARKING_MODEL || "gpt-5-mini-2025-08-07";
+export const OPENAI_STAFF_MODEL = process.env.OPENAI_STAFF_MODEL || "gpt-5.4-mini";
 
 export function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json" } });
@@ -56,7 +58,7 @@ export async function getAuthedUid(req) {
 // Structured AI usage logging shared by the Node routes. Callers may await it
 // when the record must be durable before the response is returned.
 export function logUsage(label, school_id, usage, {
-  provider = "anthropic", model = null, request_id = null, response_id = null,
+  provider = "openai", model = null, request_id = null, response_id = null,
   operation = label, latency_ms = 0, success = true, source = "ai",
 } = {}) {
   usage = usage || {};
@@ -73,8 +75,8 @@ export function logUsage(label, school_id, usage, {
     success: !!success,
     input_tokens: Number(usage.input_tokens) || 0,
     output_tokens: Number(usage.output_tokens) || 0,
-    cache_creation_tokens: Number(usage.cache_creation_input_tokens) || 0,
-    cache_read_tokens: Number(usage.cache_read_input_tokens) || 0,
+    cache_creation_tokens: Number(usage.cache_creation_input_tokens ?? usage.input_tokens_details?.cache_write_tokens) || 0,
+    cache_read_tokens: Number(usage.cache_read_input_tokens ?? usage.input_tokens_details?.cached_tokens) || 0,
   } }).catch((e) => console.error("ai_usage insert failed:", e));
 }
 
@@ -89,24 +91,49 @@ export async function overBackstop(school_id) {
   } catch { return false; }
 }
 
-// One Anthropic Messages call. Returns the parsed response JSON ({ content, usage, ... }).
-export async function anthropicMessages({ model, max_tokens, system, messages }) {
-  const body = { model, max_tokens, messages };
-  if (system) body.system = system;
+// One OpenAI Responses call. Responses are not stored by the provider. Structured
+// output is used where a route supplies a schema so malformed JSON is far rarer.
+export async function openAIResponses({
+  model,
+  max_output_tokens,
+  instructions,
+  input,
+  schema,
+  schema_name = "result",
+  reasoning_effort = "minimal",
+  prompt_cache_key,
+}) {
+  const body = {
+    model,
+    max_output_tokens,
+    input,
+    store: false,
+    reasoning: { effort: reasoning_effort },
+    text: schema
+      ? { verbosity: "low", format: { type: "json_schema", name: schema_name, strict: true, schema } }
+      : { verbosity: "low" },
+  };
+  if (instructions) body.instructions = instructions;
+  if (prompt_cache_key) body.prompt_cache_key = prompt_cache_key;
   const started = performance.now();
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
+  const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: JSON.stringify(body),
   });
   const data = await r.json();
-  return { ...data, _telemetry: { latency_ms: performance.now() - started, success: r.ok, status: r.status } };
+  return { ...data, _telemetry: { latency_ms: performance.now() - started, success: r.ok && data?.status === "completed", status: r.status } };
 }
 
-// Pull the first text block out of an Anthropic response and strip code fences.
+// Pull the first text output out of an OpenAI Responses payload.
 export function responseText(data) {
-  const text = data?.content?.[0]?.text || "";
-  return text.replace(/```json|```/g, "").trim();
+  if (typeof data?.output_text === "string") return data.output_text.trim();
+  for (const item of data?.output || []) {
+    for (const part of item?.content || []) {
+      if (part?.type === "output_text" && typeof part.text === "string") return part.text.trim();
+    }
+  }
+  return "";
 }
 
 function stableValue(value) {
@@ -139,7 +166,7 @@ export async function getCachedOperation(operation, request_hash, maxAgeSeconds 
   } catch { return null; }
 }
 
-export async function putCachedOperation({ operation, request_hash, actor_id, school_id, provider = "anthropic", model, result }) {
+export async function putCachedOperation({ operation, request_hash, actor_id, school_id, provider = "openai", model, result }) {
   try {
     await rest("ai_operation_cache", { method: "POST", body: {
       operation, request_hash, actor_id, school_id, provider, model, result,

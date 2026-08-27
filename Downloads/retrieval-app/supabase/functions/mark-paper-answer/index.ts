@@ -4,11 +4,23 @@ import { BASE_PAPER } from "../_shared/marking/base-paper.ts";
 import { overlayFor } from "../_shared/marking/registry.ts";
 import {
   AI_PROVIDER, claimRequest, decodePaperVerdict, finishRequest,
-  logUsage, validRequestId, type UsageEvent,
+  logUsage, OPENAI_API_KEY, OPENAI_MARKING_MODEL,
+  openAIResponse, openAIResponseText, validRequestId, type UsageEvent,
 } from "../_shared/ai.ts";
 
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = OPENAI_MARKING_MODEL;
+
+const PAPER_VERDICT_SCHEMA = {
+  type: "object",
+  properties: {
+    m: { type: "integer" },
+    p: { type: "array", items: { type: "integer" } },
+    f: { type: "string" },
+    x: { type: "boolean" },
+  },
+  required: ["m", "p", "f", "x"],
+  additionalProperties: false,
+};
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -103,35 +115,27 @@ async function markWithAI(
     .map((p, i) => `  ${i}. (${p.marks ?? 1} mark${(p.marks ?? 1) > 1 ? "s" : ""}) ${p.text ?? ""}`)
     .join("\n");
   const userMessage = `Question (${marks} mark${marks > 1 ? "s" : ""}, command word: ${command_word || "none"}):\n${question}\n\nMarking points:\n${pointsList}\n\nStudent's answer:\n${student_answer}\n\nMaximum marks awardable: ${marks}`;
-  const started = performance.now();
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY!, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 320,
-      system: [
-        // Subject-agnostic examiner engine + per-subject overlay, both cached. base +
-        // overlay match the old single prompt size, so caching is unchanged (and never
-        // worse); the engine may also cache once across subjects if it clears the floor.
-        { type: "text", text: BASE_PAPER, cache_control: { type: "ephemeral" } },
-        { type: "text", text: overlay, cache_control: { type: "ephemeral" } },
-      ],
-      messages: [{ role: "user", content: userMessage }],
-    }),
+  const result = await openAIResponse({
+    model: MODEL,
+    max_output_tokens: 320,
+    instructions: `${BASE_PAPER}\n\n${overlay}`,
+    input: userMessage,
+    schema: PAPER_VERDICT_SCHEMA,
+    schema_name: "paper_verdict",
+    reasoning_effort: "minimal",
+    prompt_cache_key: "paper-marker-v3",
   });
-  const data = await response.json();
+  const data = result.data;
   const event: UsageEvent = {
     call_label: "mark-paper", source: "ai", operation: "mark_paper",
     provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
-    latency_ms: performance.now() - started, success: response.ok,
+    latency_ms: result.latency_ms, success: result.ok,
   };
-  if (!response.ok) {
+  if (!result.ok) {
     await logUsage(sb, event, context);
-    throw new Error(`Anthropic ${response.status}`);
+    throw new Error(`OpenAI ${result.status}`);
   }
-  const text = data.content?.[0]?.text || "";
-  const clean = text.replace(/```json|```/g, "").trim();
+  const clean = openAIResponseText(data);
   let parsed: { marks_awarded?: number; awarded_points?: unknown; feedback?: string; flagged?: boolean };
   try { parsed = decodePaperVerdict(JSON.parse(clean)); } catch (error) {
     event.success = false;
@@ -223,7 +227,7 @@ Deno.serve(async (req: Request) => {
       return json({ error: "This answer is already being marked. Retry shortly.", request_id: requestId }, 409);
     }
 
-    if (!ANTHROPIC_API_KEY) {
+    if (!OPENAI_API_KEY) {
       await finishRequest(sb, requestId, "failed");
       activeRequestId = null;
       return json({ marks_awarded: 0, awarded_points: [], feedback: "AI marking not configured.", flagged: false, source: "fallback", recorded: false, response_id: null });

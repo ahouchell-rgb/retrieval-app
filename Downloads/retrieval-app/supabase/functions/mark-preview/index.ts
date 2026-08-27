@@ -3,7 +3,11 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { BASE_RETRIEVAL } from "../_shared/marking/base-retrieval.ts";
 import { overlayFor } from "../_shared/marking/registry.ts";
 import { checkNumericalMatch } from "../_shared/marking/numeric.ts";
-import { AI_PROVIDER, decodeRetrievalVerdict, logUsage, validRequestId, type UsageEvent } from "../_shared/ai.ts";
+import {
+  AI_PROVIDER, decodeRetrievalVerdict, logUsage, OPENAI_API_KEY,
+  OPENAI_MARKING_MODEL, openAIResponse, openAIResponseText,
+  validRequestId, type UsageEvent,
+} from "../_shared/ai.ts";
 
 /* mark-preview — ANONYMOUS, ungated retrieval marking for the public revision
  * booklets on interactive-science.com.
@@ -24,8 +28,20 @@ import { AI_PROVIDER, decodeRetrievalVerdict, logUsage, validRequestId, type Usa
  *   3. Only PAID calls consume the per-IP allowance. The limiter fails closed
  *      before AI, while exact/numeric/cache hits remain free and available. */
 
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = OPENAI_MARKING_MODEL;
+
+const RETRIEVAL_VERDICT_SCHEMA = {
+  type: "object",
+  properties: {
+    c: { type: "boolean" },
+    m: { type: "integer" },
+    f: { type: "string" },
+    x: { type: "boolean" },
+    q: { type: "string", enum: ["h", "m", "l"] },
+  },
+  required: ["c", "m", "f", "x", "q"],
+  additionalProperties: false,
+};
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -113,46 +129,27 @@ async function callAiMark(
   marks: number,
   request_id: string,
 ) {
-  const started = performance.now();
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 180,
-      system: [
-        { type: "text", text: BASE_RETRIEVAL, cache_control: { type: "ephemeral" } },
-        { type: "text", text: overlay, cache_control: { type: "ephemeral" } },
-      ],
-      messages: [{
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: `Question (${marks} mark${marks > 1 ? "s" : ""}): ${question}\nModel answer: ${model_answer}`,
-            cache_control: { type: "ephemeral" },
-          },
-          { type: "text", text: `\nStudent wrote: ${student_answer}` },
-        ],
-      }],
-    }),
+  const result = await openAIResponse({
+    model: MODEL,
+    max_output_tokens: 180,
+    instructions: `${BASE_RETRIEVAL}\n\n${overlay}`,
+    input: `Question (${marks} mark${marks > 1 ? "s" : ""}): ${question}\nModel answer: ${model_answer}\n\nStudent wrote: ${student_answer}`,
+    schema: RETRIEVAL_VERDICT_SCHEMA,
+    schema_name: "retrieval_verdict",
+    reasoning_effort: "minimal",
+    prompt_cache_key: "retrieval-marker-v3",
   });
-  const data = await response.json();
+  const data = result.data;
   const event: UsageEvent = {
     call_label: label, source, operation: "mark_preview",
     provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
-    latency_ms: performance.now() - started, success: response.ok,
+    latency_ms: result.latency_ms, success: result.ok,
   };
-  if (!response.ok) {
+  if (!result.ok) {
     await logUsage(sb, event, { request_id });
-    throw new Error(`Anthropic ${response.status}`);
+    throw new Error(`OpenAI ${result.status}`);
   }
-  const text = data.content?.[0]?.text || "";
-  const clean = text.replace(/```json|```/g, "").trim();
+  const clean = openAIResponseText(data);
   try {
     return { verdict: decodeRetrievalVerdict(JSON.parse(clean)), event };
   } catch (error) {
@@ -218,7 +215,7 @@ Deno.serve(async (req: Request) => {
       const cached = await tryCacheLookup(question_id, normalised);
       if (cached) {
         verdict = { correct: true, marks_awarded: cached.marks_awarded, feedback: cached.feedback || "Correct.", flagged: false, source: "cache" };
-      } else if (!ANTHROPIC_API_KEY) {
+      } else if (!OPENAI_API_KEY) {
         verdict = { correct: false, marks_awarded: 0, feedback: "Marking unavailable right now.", flagged: false, source: "fallback" };
       } else {
         // Cache and deterministic answers never consume the anonymous allowance.

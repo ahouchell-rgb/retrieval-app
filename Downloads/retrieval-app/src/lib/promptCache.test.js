@@ -1,27 +1,22 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
-// COST GUARDRAIL — keep both AI markers above Haiku's 4096-token prompt-cache floor.
+// COST GUARDRAIL — keep both AI markers above OpenAI's 1024-token prompt-cache floor.
 //
-// Each marker now sends its prompt as TWO cache_control:ephemeral system blocks: a
-// subject-agnostic engine (base) followed by a per-subject overlay (see
-// supabase/functions/_shared/marking/). The 4096-token floor is measured on the
-// CUMULATIVE prefix at each breakpoint, so the thing that must clear the floor is
-// base + overlay — that breakpoint always caches, giving per-subject caching identical
-// to the old single prompt. (The base block alone may sit under the floor; its own
-// breakpoint is then a silent no-op, which is fine — base+overlay still caches.)
+// Each marker sends a stable subject-agnostic engine followed by a per-subject
+// overlay (see supabase/functions/_shared/marking/). OpenAI caches eligible exact
+// prompt prefixes automatically, while the question and pupil answer remain dynamic.
 //
 // BELOW the floor the cache silently never writes — no error, you just pay full input
-// price on every call and cache_read_input_tokens stays 0 (a ~10x input-cost
-// regression). This tripwire fails if a careless edit trims a base or overlay so far
+// price on every call and cached_tokens stays 0. This tripwire fails if a careless
+// edit trims a base or overlay so far
 // that some base+overlay pair drops toward the floor.
 //
-// We can't run Anthropic's tokenizer here, so we use a conservative char proxy:
-// ~4 chars/token for English => 4096 tokens ≈ 16,384 chars. Current base+overlay pairs
-// are ~20–21k chars, so this leaves ~4k+ chars of headroom. The AUTHORITATIVE check
+// We use a conservative char proxy: ~4 chars/token for English, so 1024 tokens is
+// roughly 4096 characters. The AUTHORITATIVE check
 // remains cache_read_tokens > 0 in ai_usage after deploy — this just catches the
 // obvious "someone shortened the prompt" mistake in CI.
-const FLOOR_CHARS = 16384; // 4096 tokens × ~4 chars/token
+const FLOOR_CHARS = 4096; // 1024 tokens × ~4 chars/token
 
 function extractConst(relPath, name) {
   const src = readFileSync(new URL(relPath, import.meta.url), "utf8");
@@ -40,9 +35,9 @@ const PAIRS = [
 
 describe("AI marker prompt-cache floor", () => {
   for (const [label, baseFile, baseVar, overlayFile, overlayVar] of PAIRS) {
-    it(`${label} base + overlay stays above the 4096-token cacheable floor`, () => {
+    it(`${label} base + overlay stays above the 1024-token cacheable floor`, () => {
       const len = extractConst(baseFile, baseVar).length + extractConst(overlayFile, overlayVar).length;
-      expect(len, `${label} base+overlay is ${len} chars — below the ${FLOOR_CHARS}-char (~4096-token) cache floor; prompt caching will silently turn off`).toBeGreaterThanOrEqual(FLOOR_CHARS);
+      expect(len, `${label} base+overlay is ${len} chars — below the ${FLOOR_CHARS}-char (~1024-token) cache floor; prompt caching will silently turn off`).toBeGreaterThanOrEqual(FLOOR_CHARS);
     });
   }
 });

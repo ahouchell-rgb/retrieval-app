@@ -1,4 +1,69 @@
-export const AI_PROVIDER = "anthropic";
+export const AI_PROVIDER = "openai";
+const env = (name: string) => typeof Deno === "undefined" ? undefined : Deno.env.get(name);
+export const OPENAI_API_KEY = env("OPENAI_API_KEY");
+export const OPENAI_MARKING_MODEL = env("OPENAI_MARKING_MODEL") || "gpt-5-mini-2025-08-07";
+export const OPENAI_STAFF_MODEL = env("OPENAI_STAFF_MODEL") || "gpt-5.4-mini";
+
+type OpenAIResponseOptions = {
+  model: string;
+  max_output_tokens: number;
+  instructions?: string;
+  input: unknown;
+  schema?: Record<string, unknown>;
+  schema_name?: string;
+  reasoning_effort?: "none" | "minimal" | "low" | "medium" | "high";
+  prompt_cache_key?: string;
+};
+
+export async function openAIResponse({
+  model,
+  max_output_tokens,
+  instructions,
+  input,
+  schema,
+  schema_name = "result",
+  reasoning_effort = "minimal",
+  prompt_cache_key,
+}: OpenAIResponseOptions) {
+  const body: Record<string, unknown> = {
+    model,
+    max_output_tokens,
+    input,
+    store: false,
+    reasoning: { effort: reasoning_effort },
+    text: schema
+      ? { verbosity: "low", format: { type: "json_schema", name: schema_name, strict: true, schema } }
+      : { verbosity: "low" },
+  };
+  if (instructions) body.instructions = instructions;
+  if (prompt_cache_key) body.prompt_cache_key = prompt_cache_key;
+  const started = performance.now();
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  return {
+    data,
+    ok: response.ok && data?.status === "completed",
+    status: response.status,
+    latency_ms: performance.now() - started,
+  };
+}
+
+export function openAIResponseText(data: any): string {
+  if (typeof data?.output_text === "string") return data.output_text.trim();
+  for (const item of data?.output || []) {
+    for (const part of item?.content || []) {
+      if (part?.type === "output_text" && typeof part.text === "string") return part.text.trim();
+    }
+  }
+  return "";
+}
 
 export type RetrievalVerdict = {
   correct: boolean;
@@ -69,8 +134,8 @@ export async function logUsage(
     success: event.success,
     input_tokens: Number(usage.input_tokens) || 0,
     output_tokens: Number(usage.output_tokens) || 0,
-    cache_creation_tokens: Number(usage.cache_creation_input_tokens) || 0,
-    cache_read_tokens: Number(usage.cache_read_input_tokens) || 0,
+    cache_creation_tokens: Number(usage.cache_creation_input_tokens ?? (usage.input_tokens_details as any)?.cache_write_tokens) || 0,
+    cache_read_tokens: Number(usage.cache_read_input_tokens ?? (usage.input_tokens_details as any)?.cached_tokens) || 0,
   });
   if (error) console.error("ai_usage insert failed:", error);
 }

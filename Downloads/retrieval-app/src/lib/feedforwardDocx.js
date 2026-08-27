@@ -1,7 +1,7 @@
 // Feedforward .docx builder — the "agreed style" (bordered-box HGO) per the feedforward Skill.
 //
 // Takes the STRUCTURED feedforward spec (produced by the paper-feedforward server route from a
-// Claude call) and deterministically renders a one-page A4 Word document: one bordered, page-safe
+// OpenAI call) and deterministically renders a one-page A4 Word document: one bordered, page-safe
 // box per struggled question, each with a "Remember" line, two parallel exam-style questions with
 // mark tariffs + command words, and a faint mark-scheme line. Pupils answer in their books, so no
 // answer lines are added.

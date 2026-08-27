@@ -9,11 +9,23 @@ import { C } from "../lib/theme";
 // Every marking writes one row tagged with its source, so the free-vs-AI blend, the
 // per-mark cost and the annual run-rate are all MEASURED, not estimated.
 
-// Anthropic list pricing (USD per 1M tokens). Model identity now comes from each
-// usage row, so occasional Sonnet staff operations are not priced as Haiku.
+// List pricing (USD per 1M tokens). Keep legacy Anthropic rates so historical
+// rows remain accurate after the OpenAI switch.
 const HAIKU_PRICE = { input: 1.0, output: 5.0, cacheRead: 0.10, cacheWrite: 1.25 };
 const SONNET_PRICE = { input: 3.0, output: 15.0, cacheRead: 0.30, cacheWrite: 3.75 };
-const priceFor = (model = "") => String(model).includes("sonnet") ? SONNET_PRICE : HAIKU_PRICE;
+const GPT5_MINI_PRICE = { input: 0.25, output: 2.0, cacheRead: 0.025, cacheWrite: 0 };
+const GPT54_MINI_PRICE = { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 };
+const priceFor = (provider = "", model = "") => {
+  if (provider === "openai") return String(model).includes("5.4-mini") ? GPT54_MINI_PRICE : GPT5_MINI_PRICE;
+  return String(model).includes("sonnet") ? SONNET_PRICE : HAIKU_PRICE;
+};
+const rowCost = (row) => {
+  const p = priceFor(row.provider, row.model);
+  const input = Number(row.input_tokens) || 0;
+  const cached = Number(row.cache_read_tokens) || 0;
+  const uncachedInput = row.provider === "openai" ? Math.max(0, input - cached) : input;
+  return (uncachedInput * p.input + (Number(row.output_tokens) || 0) * p.output + cached * p.cacheRead + (Number(row.cache_write_tokens) || 0) * p.cacheWrite) / 1_000_000;
+};
 const USD_TO_GBP = 0.79;
 
 // Fixed infrastructure (annual GBP) shown for context alongside the variable AI cost.
@@ -94,11 +106,8 @@ export function CostDashboard({ students = [], classes = [], teachers = [], resp
   const s = summary && typeof summary === "object" ? summary : {};
   const byModel = Array.isArray(s.by_model) ? s.by_model : [];
   const usd = byModel.length
-    ? byModel.reduce((sum, row) => {
-        const p = priceFor(row.model);
-        return sum + ((row.input_tokens || 0) * p.input + (row.output_tokens || 0) * p.output + (row.cache_read_tokens || 0) * p.cacheRead + (row.cache_write_tokens || 0) * p.cacheWrite) / 1_000_000;
-      }, 0)
-    : ((s.input_tokens || 0) * HAIKU_PRICE.input + (s.output_tokens || 0) * HAIKU_PRICE.output + (s.cache_read_tokens || 0) * HAIKU_PRICE.cacheRead + (s.cache_write_tokens || 0) * HAIKU_PRICE.cacheWrite) / 1_000_000;
+    ? byModel.reduce((sum, row) => sum + rowCost(row), 0)
+    : rowCost({ provider: "openai", model: "gpt-5-mini", input_tokens: s.input_tokens, output_tokens: s.output_tokens, cache_read_tokens: s.cache_read_tokens, cache_write_tokens: s.cache_write_tokens });
   const markings = s.markings || 0;
   const aiMarks = s.ai_markings || 0;
   const secondCalls = s.second_calls || 0;
@@ -257,7 +266,7 @@ export function CostDashboard({ students = [], classes = [], teachers = [], resp
           )}
 
           <div style={{ marginTop: 16, padding: "10px 12px", background: C.card, border: `1px dashed ${C.bdr}`, borderRadius: 8, fontSize: 11, color: C.mid, lineHeight: 1.6 }}>
-            <strong style={{ color: C.txt }}>How this is calculated.</strong> Real spend from the <code style={{ background: C.bg, padding: "1px 4px", borderRadius: 3 }}>ai_usage</code> token log, priced by the provider and model recorded on each call (Haiku for marking; Sonnet where a staff workflow uses it). Every marking writes one source-tagged row, so the blend and per-mark cost are <em>measured, not estimated</em>. "At this rate" annualises the window linearly{since ? `; data goes back to ${since.toLocaleDateString("en-GB")}` : ""}. Department figures attribute this month's recorded marks at the blended per-mark rate.
+            <strong style={{ color: C.txt }}>How this is calculated.</strong> Real spend from the <code style={{ background: C.bg, padding: "1px 4px", borderRadius: 3 }}>ai_usage</code> token log, priced by the provider and exact model recorded on each call. Historical Anthropic rows and current OpenAI rows are costed separately. Every marking writes one source-tagged row, so the blend and per-mark cost are <em>measured, not estimated</em>. "At this rate" annualises the window linearly{since ? `; data goes back to ${since.toLocaleDateString("en-GB")}` : ""}. Department figures attribute this month's recorded marks at the blended per-mark rate.
           </div>
         </>
       )}

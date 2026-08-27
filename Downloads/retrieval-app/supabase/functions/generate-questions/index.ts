@@ -1,14 +1,16 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { AI_PROVIDER, logUsage, requestHash, type UsageEvent } from "../_shared/ai.ts";
+import {
+  AI_PROVIDER, logUsage, OPENAI_API_KEY, OPENAI_MARKING_MODEL,
+  openAIResponse, openAIResponseText, requestHash, type UsageEvent,
+} from "../_shared/ai.ts";
 
 // AI question generation for the question bank (Tier-2: question acquisition).
 // Staff-only. Returns DRAFTS — it never writes to `questions`; the teacher reviews
 // and saves them through the normal client insert (which RLS + the plan gate and the
-// shared-guard trigger still govern). Anthropic usage is logged to ai_usage like the
+// shared-guard trigger still govern). OpenAI usage is logged to ai_usage like the
 // markers, tagged call_label='generate' so it shows in the cost dashboard.
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = OPENAI_MARKING_MODEL;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const sb = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
@@ -31,8 +33,28 @@ RULES:
 - Vary difficulty and sub-topics across the set; do not repeat the same fact.
 - British spelling.
 
-Respond with ONLY a JSON array, no prose, no backticks:
-[{"question_text":"...","model_answer":"...","marks":<int 1-6>}]`;
+Return the requested questions using the supplied JSON schema.`;
+
+const QUESTIONS_SCHEMA = {
+  type: "object",
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          question_text: { type: "string" },
+          model_answer: { type: "string" },
+          marks: { type: "integer", minimum: 1, maximum: 6 },
+        },
+        required: ["question_text", "model_answer", "marks"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["questions"],
+  additionalProperties: false,
+};
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -40,7 +62,7 @@ Deno.serve(async (req: Request) => {
     new Response(JSON.stringify(obj), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
   try {
-    if (!ANTHROPIC_API_KEY) return json({ error: "AI generation is not configured." }, 500);
+    if (!OPENAI_API_KEY) return json({ error: "AI generation is not configured." }, 500);
     if (!sb) return json({ error: "Server not configured." }, 500);
 
     // Auth: a valid JWT for a staff member (teacher / hod / moderator / admin).
@@ -81,30 +103,28 @@ Deno.serve(async (req: Request) => {
     }
 
     const requestId = crypto.randomUUID();
-    const started = performance.now();
-    const resp = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 1800,
-        system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-        messages: [{ role: "user", content: userMsg }],
-      }),
+    const result = await openAIResponse({
+      model: MODEL,
+      max_output_tokens: 1800,
+      instructions: SYSTEM_PROMPT,
+      input: userMsg,
+      schema: QUESTIONS_SCHEMA,
+      schema_name: "generated_questions",
+      reasoning_effort: "minimal",
+      prompt_cache_key: "question-generator-v3",
     });
-    const data = await resp.json();
+    const data = result.data;
     const event: UsageEvent = {
       call_label: "generate", source: "generate_questions", operation: "generate_questions",
       provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
-      latency_ms: performance.now() - started, success: resp.ok,
+      latency_ms: result.latency_ms, success: result.ok,
     };
     await logUsage(sb, event, { school_id: profile.school_id ?? null, request_id: requestId });
-    if (!resp.ok) return json({ error: `Question generation failed (${resp.status})` }, 502);
+    if (!result.ok) return json({ error: `Question generation failed (${result.status})` }, 502);
 
-    const text = data?.content?.[0]?.text || "";
-    const clean = text.replace(/```json|```/g, "").trim();
+    const clean = openAIResponseText(data);
     let items: unknown;
-    try { items = JSON.parse(clean); } catch { return json({ error: "The model returned malformed output — try again." }, 502); }
+    try { items = JSON.parse(clean)?.questions; } catch { return json({ error: "The model returned malformed output — try again." }, 502); }
     const out = (Array.isArray(items) ? items : [])
       .map((q: Record<string, unknown>) => ({
         question_text: String(q?.question_text || "").trim().slice(0, 1000),

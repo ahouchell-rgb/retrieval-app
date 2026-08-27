@@ -2,38 +2,59 @@
 //
 // Phase 2 of the feedforward feature. The teacher uploads a Word exam paper to the
 // paper-uploads bucket; this downloads it, extracts the text with mammoth, and asks
-// Haiku to split it into numbered questions with mark tariffs. Returns a DRAFT list
+// OpenAI to split it into numbered questions with mark tariffs. Returns a DRAFT list
 // the teacher ticks in the Feedforward panel — nothing is written to paper_questions
 // (parsing is best-effort; the teacher confirms what's relevant).
 //
-// Node runtime: mammoth is a Node library and the Haiku call can run a few seconds.
-// Required env (Vercel): ANTHROPIC_API_KEY, SUPABASE_SERVICE_ROLE_KEY,
+// Node runtime: mammoth is a Node library and the model call can run a few seconds.
+// Required env (Vercel): OPENAI_API_KEY, SUPABASE_SERVICE_ROLE_KEY,
 //   NEXT_PUBLIC_SUPA_URL, NEXT_PUBLIC_SUPA_KEY.
 
 import mammoth from "mammoth";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import {
-  SUPA_URL, ANON_KEY, SERVICE_KEY, ANTHROPIC_API_KEY,
-  jsonResponse as json, rest, getAuthedUid, logUsage, overBackstop, anthropicMessages, responseText,
+  SUPA_URL, ANON_KEY, SERVICE_KEY, OPENAI_API_KEY, OPENAI_MARKING_MODEL,
+  jsonResponse as json, rest, getAuthedUid, logUsage, overBackstop, openAIResponses, responseText,
   contentHash, requestHash, getCachedOperation, putCachedOperation,
 } from "../../../lib/serverSupa";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const EXTRACT_MODEL = process.env.ANTHROPIC_EXTRACT_MODEL || "claude-haiku-4-5-20251001";
+const EXTRACT_MODEL = process.env.OPENAI_EXTRACT_MODEL || OPENAI_MARKING_MODEL;
 const MAX_TEXT_CHARS = 24000;            // bound the prompt for the .docx text path
 const MAX_BINARY_BYTES = 18 * 1024 * 1024; // PDF/image cap (base64 inflates ~33%; API limit ~32MB)
 const MIN_LOCAL_PDF_CHARS = 300;          // shorter usually means a scan; use vision fallback
 const PARSER_VERSION = 2;
 
-const EXTRACT_SYSTEM = `You extract exam questions from a UK secondary past paper (given as text, a PDF, or an image). Return ONLY a JSON array (no prose, no code fences) of objects:
-{"label": string, "text": string, "marks": number|null, "command_word": string|null}
+const EXTRACT_SYSTEM = `You extract exam questions from a UK secondary past paper (given as text, a PDF, or an image).
 - label: the question number/label exactly as printed (e.g. "3", "7(a)", "11").
 - text: the question wording a pupil answers, concise. OMIT mark schemes, instructions, figure captions, and page headers.
 - marks: the mark tariff if shown (e.g. "[3 marks]" -> 3), else null.
 - command_word: the GCSE/KS3 command word if identifiable (State, Define, Describe, Explain, Calculate, Suggest, Evaluate, Compare), else null.
-Include every distinct question and sub-question a pupil answers, in order. Ignore cover pages, blank lines, "Answer all questions", and formula sheets. If you cannot find any questions, return [].`;
+Include every distinct question and sub-question a pupil answers, in order. Ignore cover pages, blank lines, "Answer all questions", and formula sheets. Use the supplied JSON schema and return an empty questions array if none are found.`;
+
+const EXTRACT_SCHEMA = {
+  type: "object",
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: ["string", "null"] },
+          text: { type: "string" },
+          marks: { type: ["integer", "null"] },
+          command_word: { type: ["string", "null"] },
+        },
+        required: ["label", "text", "marks", "command_word"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["questions"],
+  additionalProperties: false,
+};
 
 async function extractPdfText(buffer) {
   const task = getDocument({ data: new Uint8Array(buffer), useSystemFonts: true, isEvalSupported: false });
@@ -53,7 +74,7 @@ async function extractPdfText(buffer) {
 
 export async function POST(req) {
   if (!SERVICE_KEY || !ANON_KEY) return json({ error: "Server not configured." }, 500);
-  if (!ANTHROPIC_API_KEY) return json({ error: "AI parsing is not configured." }, 500);
+  if (!OPENAI_API_KEY) return json({ error: "AI parsing is not configured." }, 500);
 
   let body;
   try { body = await req.json(); } catch { return json({ error: "Bad request" }, 400); }
@@ -70,7 +91,7 @@ export async function POST(req) {
     schoolId = profile?.school_id || null;
     if (profile?.role !== "moderator" && !path.startsWith(`${uid}/`)) return json({ error: "Not your file." }, 403);
   } catch { return json({ error: "Could not verify access." }, 403); }
-  // Accept Word (.docx, parsed via mammoth) or a PDF / image (read multimodally by Claude).
+  // Accept Word (.docx, parsed via mammoth) or a PDF / image (read multimodally by OpenAI).
   const ext = (path.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase();
   const IMAGE_MEDIA = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
   const isDocx = ext === "docx" || ext === "doc";
@@ -116,7 +137,7 @@ export async function POST(req) {
   } else if (isPdf) {
     // Digital PDFs are usually text-bearing. Extract that locally first: it is
     // faster and sends far fewer provider tokens than uploading every page as a
-    // document. Scanned/image-only PDFs fall back to Claude vision.
+    // document. Scanned/image-only PDFs fall back to model vision.
     let text = "";
     try { text = await extractPdfText(buffer); } catch { /* vision fallback below */ }
     if (text.length >= MIN_LOCAL_PDF_CHARS) {
@@ -126,24 +147,34 @@ export async function POST(req) {
   }
 
   if (!userContent) {
-    // PDF scan / image: send bytes to Claude (inline base64). Bound the size.
+    // PDF scan / image: send bytes inline to OpenAI. Bound the size.
     extraction = isPdf ? "pdf_vision" : "image_vision";
     if (buffer.length > MAX_BINARY_BYTES) {
       return json({ error: "That file is too large to read automatically — try a smaller PDF/photo, or type the questions in the notes box." }, 413);
     }
     const b64 = buffer.toString("base64");
     const block = isPdf
-      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
-      : { type: "image", source: { type: "base64", media_type: IMAGE_MEDIA[ext], data: b64 } };
-    userContent = [block, { type: "text", text: "The attached file is a past paper or test the class has sat. Extract its questions as specified." }];
+      ? { type: "input_file", filename: `paper.${ext}`, file_data: `data:application/pdf;base64,${b64}` }
+      : { type: "input_image", image_url: `data:${IMAGE_MEDIA[ext]};base64,${b64}`, detail: "high" };
+    userContent = [{
+      role: "user",
+      content: [
+        block,
+        { type: "input_text", text: "The attached file is a past paper or test the class has sat. Extract its questions as specified." },
+      ],
+    }];
   }
 
-  // Ask Haiku to split it into questions.
-  const data = await anthropicMessages({
+  // Ask the cost-efficient OpenAI model to split it into questions.
+  const data = await openAIResponses({
     model: EXTRACT_MODEL,
-    max_tokens: 4096,
-    system: [{ type: "text", text: EXTRACT_SYSTEM }],
-    messages: [{ role: "user", content: userContent }],
+    max_output_tokens: 4096,
+    instructions: EXTRACT_SYSTEM,
+    input: userContent,
+    schema: EXTRACT_SCHEMA,
+    schema_name: "paper_questions",
+    reasoning_effort: "minimal",
+    prompt_cache_key: "paper-parser-v3",
   });
   const requestId = crypto.randomUUID();
   await logUsage("paper-parse", schoolId, data?.usage, {
@@ -153,7 +184,7 @@ export async function POST(req) {
   if (!data?._telemetry?.success) return json({ error: "Could not read questions from that paper — try again." }, 502);
 
   let parsed;
-  try { parsed = JSON.parse(responseText(data)); } catch { parsed = null; }
+  try { parsed = JSON.parse(responseText(data))?.questions; } catch { parsed = null; }
   if (!Array.isArray(parsed)) return json({ error: "Could not read questions from that paper — type them in the notes box instead." }, 502);
 
   // Validate/clamp into a clean draft list.

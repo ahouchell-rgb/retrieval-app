@@ -8,23 +8,23 @@
 // Returns: { misconceptions: [...], computed_at, model }  (or { error })
 //
 // Privacy: only the wrong-answer TEXT + aggregate counts are sent to the model —
-// never pupil names or ids (the rollup RPC returns no identifiers). Anthropic is
-// already the marking sub-processor (mark-answer sends the same text), so this
-// introduces no new data flow. The raw result is cached in class_misconception_runs
+// never pupil names or ids (the rollup RPC returns no identifiers). The raw result
+// is cached in class_misconception_runs
 // so re-opening the panel is free.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { AI_PROVIDER, logUsage, requestHash, type UsageEvent } from "../_shared/ai.ts";
+import {
+  AI_PROVIDER, logUsage, OPENAI_API_KEY, OPENAI_STAFF_MODEL,
+  openAIResponse, openAIResponseText, requestHash, type UsageEvent,
+} from "../_shared/ai.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 
 // Teacher-facing analysis tier (matches the Feynman content routes: chat /
 // feedforward / deck-to-questions). Insight quality matters here and call volume
-// is low (a teacher clicks occasionally), so Sonnet over Haiku. Bump to
-// "claude-opus-4-8" if you want deeper clustering — one-line change.
-const MODEL = "claude-sonnet-4-6";
+// is low (a teacher clicks occasionally), so use the stronger OpenAI mini tier.
+const MODEL = OPENAI_STAFF_MODEL;
 const MAX_OUTPUT_TOKENS = 1800;
 const MAX_QUESTIONS = 24;          // cap prompt size / cost — the weakest questions first
 
@@ -47,8 +47,33 @@ RULES:
 - "fix" is one concrete teaching move or the correct idea to reteach, in a single sentence.
 - British spelling. Keep every field tight.
 
-Respond with ONLY a JSON object — no prose, no backticks:
-{"misconceptions":[{"title":"<=8 words naming the specific confusion","topic_name":"the topic it sits in","pupils":<int>,"explanation":"1-2 sentences: the faulty reasoning these wrong answers reveal","example_wrong":"one representative wrong answer, verbatim","fix":"1 sentence: the teaching move / correct idea to reteach","question_ids":["<ids of the questions this shows up in>"]}]}`;
+Return the misconceptions using the supplied JSON schema.`;
+
+const MISCONCEPTIONS_SCHEMA = {
+  type: "object",
+  properties: {
+    misconceptions: {
+      type: "array",
+      maxItems: 5,
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          topic_name: { type: "string" },
+          pupils: { type: "integer", minimum: 0 },
+          explanation: { type: "string" },
+          example_wrong: { type: "string" },
+          fix: { type: "string" },
+          question_ids: { type: "array", items: { type: "string" } },
+        },
+        required: ["title", "topic_name", "pupils", "explanation", "example_wrong", "fix", "question_ids"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["misconceptions"],
+  additionalProperties: false,
+};
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
@@ -56,7 +81,7 @@ Deno.serve(async (req: Request) => {
   const json = (obj: unknown, status = 200) =>
     new Response(JSON.stringify(obj), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-  if (!ANTHROPIC_API_KEY) return json({ error: "AI marking is not configured." }, 500);
+  if (!OPENAI_API_KEY) return json({ error: "AI analysis is not configured." }, 500);
 
   const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
@@ -112,46 +137,40 @@ Deno.serve(async (req: Request) => {
     return json({ ...(prior.data[0].result || { misconceptions: [] }), computed_at: prior.data[0].computed_at, model: prior.data[0].model, cached: true });
   }
 
-  // ── Cluster with Claude ─────────────────────────────────────────────────────
+  // ── Cluster with OpenAI ─────────────────────────────────────────────────────
   let data: any;
   const requestId = crypto.randomUUID();
   const started = performance.now();
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: MAX_OUTPUT_TOKENS,
-        // Default 5-minute cache: identical inputs are now stored by hash, so paying
-        // the higher 1-hour cache-write premium no longer buys useful reuse.
-        system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-        messages: [{ role: "user", content: `Class wrong-answer data (last ${days} days):\n\n${dataText}\n\nReturn the JSON now.` }],
-      }),
+    const result = await openAIResponse({
+      model: MODEL,
+      max_output_tokens: MAX_OUTPUT_TOKENS,
+      instructions: SYSTEM_PROMPT,
+      input: `Class wrong-answer data (last ${days} days):\n\n${dataText}`,
+      schema: MISCONCEPTIONS_SCHEMA,
+      schema_name: "class_misconceptions",
+      reasoning_effort: "none",
+      prompt_cache_key: "class-misconceptions-v3",
     });
-    data = await res.json();
+    data = result.data;
     const event: UsageEvent = {
       call_label: "misconceptions", source: "ai", operation: "class_misconceptions",
       provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
-      latency_ms: performance.now() - started, success: res.ok,
+      latency_ms: result.latency_ms, success: result.ok,
     };
     await logUsage(sb, event, { school_id: schoolId, request_id: requestId });
-    if (!res.ok) return json({ error: `Claude ${res.status}: ${String(data?.error?.message || "").slice(0, 200)}` }, 502);
+    if (!result.ok) return json({ error: `OpenAI ${result.status}: ${String(data?.error?.message || "").slice(0, 200)}` }, 502);
   } catch (e) {
     await logUsage(sb, {
       call_label: "misconceptions", source: "ai", operation: "class_misconceptions",
       provider: AI_PROVIDER, model: MODEL, latency_ms: performance.now() - started, success: false,
     }, { school_id: schoolId, request_id: requestId });
-    return json({ error: `Claude request failed: ${(e as Error).message}` }, 502);
+    return json({ error: `OpenAI request failed: ${(e as Error).message}` }, 502);
   }
   const usage = data?.usage || {};
 
   // ── Parse + sanitise (clamp lengths; drop hallucinated question ids) ────────
-  const raw = (data?.content?.[0]?.text || "").replace(/```json|```/g, "").trim();
+  const raw = openAIResponseText(data);
   let parsed: any;
   try { parsed = JSON.parse(raw); } catch { return json({ error: "The model returned malformed output — try again." }, 502); }
 

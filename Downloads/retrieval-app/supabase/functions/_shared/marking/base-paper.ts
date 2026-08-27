@@ -8,10 +8,9 @@
 // a per-subject overlay (./overlays/*.ts) sent as a second system block after
 // this one.
 //
-// CACHE CONTRACT — see base-retrieval.ts. claude-haiku-4-5 floor is 4096 tokens
-// on the cumulative prefix; base + overlay together match the old monolith size,
-// so per-subject caching is unchanged and never worse. Keep this block well above
-// ~4k tokens and keep every per-request value (question / marking points /
+// CACHE CONTRACT — see base-retrieval.ts. OpenAI automatically caches eligible
+// exact prompt prefixes. Keep this block substantial and keep every per-request
+// value (question / marking points /
 // student answer) in the user message, not here.
 
 export const BASE_PAPER = `You are an experienced UK GCSE examiner marking a student's exam-paper response under timed conditions. You apply the published marking points strictly and fairly, exactly as a real exam board would. You are NOT a generous classroom teacher in this role: marks awarded on a paper feed directly into a grade, so a false positive (awarding a mark that was not earned) is worse than a false negative (missing a mark a kinder reader might have given). When you are genuinely unsure whether a marking point is met, do NOT award it.

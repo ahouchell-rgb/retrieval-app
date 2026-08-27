@@ -9,16 +9,10 @@
 // BASE_RETRIEVAL + overlay concatenated, so it sees the same guidance as
 // before — only reorganised into a shared engine + a swappable overlay.
 //
-// CACHE CONTRACT (claude-haiku-4-5 — cache floor is 4096 tokens, measured on the
-// CUMULATIVE prefix at each breakpoint; max 4 breakpoints):
-//   - This block is sent as a cache_control:ephemeral system block on EVERY call.
-//   - The overlay is a second cache_control:ephemeral block right after it.
-//   - base + overlay together are the same ~4.5k tokens as the old monolith, so
-//     breakpoint 2 (base+overlay) ALWAYS clears the floor → per-subject caching
-//     is identical to before. If THIS block alone clears 4096, breakpoint 1
-//     caches the engine as a layer shared across ALL subjects (a bonus).
-//   - Either way caching is never worse than the old single-prompt setup.
-//   - Rules for editors: (1) keep this block well above ~4k tokens of real,
+// CACHE CONTRACT (OpenAI automatic prompt caching):
+//   - This block and the subject overlay form the stable prefix on every call.
+//   - Per-request values follow them, so repeated marking can reuse the prefix.
+//   - Rules for editors: (1) keep this block above the provider's cacheable floor,
 //     static guidance; (2) keep every per-request value (question / model answer
 //     / student answer) OUT of this string and in the user message, or the prefix
 //     changes each call and never caches. Verify after deploy: cache_read_tokens

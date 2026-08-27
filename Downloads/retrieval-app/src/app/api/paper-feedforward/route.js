@@ -8,23 +8,59 @@
 // paper-uploads bucket and a paper_feedforward_sheets row ties it to the paper.
 // See docs/FEEDFORWARD-FEATURE-SPEC.md.
 //
-// Node runtime: the docx build + a Sonnet generation can exceed the ~25s edge wall.
-// Required env (Vercel): ANTHROPIC_API_KEY, SUPABASE_SERVICE_ROLE_KEY,
+// Node runtime: the docx build + generation can exceed the ~25s edge wall.
+// Required env (Vercel): OPENAI_API_KEY, SUPABASE_SERVICE_ROLE_KEY,
 //   NEXT_PUBLIC_SUPA_URL, NEXT_PUBLIC_SUPA_KEY.
 
 import { buildFeedforwardDocx } from "../../../lib/feedforwardDocx";
 import {
-  SUPA_URL, ANON_KEY, SERVICE_KEY, ANTHROPIC_API_KEY,
-  jsonResponse as json, rest, getAuthedUid, logUsage, overBackstop, anthropicMessages, responseText, requestHash,
+  SUPA_URL, ANON_KEY, SERVICE_KEY, OPENAI_API_KEY, OPENAI_STAFF_MODEL,
+  jsonResponse as json, rest, getAuthedUid, logUsage, overBackstop, openAIResponses, responseText, requestHash,
 } from "../../../lib/serverSupa";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// Generation wants a stronger model than the Haiku marker; configurable.
-const MODEL = process.env.ANTHROPIC_FEEDFORWARD_MODEL || "claude-sonnet-4-6";
+// Generation wants a stronger model than the high-volume marker; configurable.
+const MODEL = process.env.OPENAI_FEEDFORWARD_MODEL || OPENAI_STAFF_MODEL;
 const MAX_OUTPUT_TOKENS = 4096;
 const PROMPT_VERSION = 2;
+
+const FEEDFORWARD_SCHEMA = {
+  type: "object",
+  properties: {
+    title: { type: "string" },
+    boxes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          heading: { type: "string" },
+          remember: { type: "string" },
+          questions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                command: { type: "string" },
+                text: { type: "string" },
+                marks: { type: "integer", minimum: 1, maximum: 12 },
+              },
+              required: ["command", "text", "marks"],
+              additionalProperties: false,
+            },
+          },
+          markScheme: { type: "string" },
+          diagram: { type: ["string", "null"] },
+        },
+        required: ["heading", "remember", "questions", "markScheme", "diagram"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["title", "boxes"],
+  additionalProperties: false,
+};
 
 function buildPrompt({ paper, subjectName, struggledQuestions, notes }) {
   const qList = struggledQuestions.length
@@ -47,14 +83,12 @@ For EACH struggled question, produce one box that:
   4. gives a faint mark-scheme line listing the creditworthy points.
 Use UK spelling. Pupils answer in their books, so do NOT add answer lines.
 
-Return ONLY a JSON object (no prose, no code fences) of this exact shape:
-{"title": string, "boxes": [{"heading": string, "remember": string, "questions": [{"command": string, "text": string, "marks": number}], "markScheme": string, "diagram"?: string}]}
-"diagram" is OPTIONAL: include it ONLY when the question genuinely needs pupils to sketch/label something, as a short caption describing what to draw (never a real diagram).`;
+Return the result using the supplied JSON schema. Set "diagram" to null unless the question genuinely needs pupils to sketch or label something; otherwise use a short caption describing what to draw (never a real diagram).`;
 }
 
 export async function POST(req) {
   if (!SERVICE_KEY || !ANON_KEY) return json({ error: "Server not configured." }, 500);
-  if (!ANTHROPIC_API_KEY) return json({ error: "AI generation is not configured." }, 500);
+  if (!OPENAI_API_KEY) return json({ error: "AI generation is not configured." }, 500);
 
   let body;
   try { body = await req.json(); } catch { return json({ error: "Bad request" }, 400); }
@@ -135,7 +169,15 @@ export async function POST(req) {
     return json({ error: "AI generation is paused for your school right now — please check your usage." }, 429);
   }
 
-  const data = await anthropicMessages({ model: MODEL, max_tokens: MAX_OUTPUT_TOKENS, messages: [{ role: "user", content: prompt }] });
+  const data = await openAIResponses({
+    model: MODEL,
+    max_output_tokens: MAX_OUTPUT_TOKENS,
+    input: prompt,
+    schema: FEEDFORWARD_SCHEMA,
+    schema_name: "paper_feedforward",
+    reasoning_effort: "none",
+    prompt_cache_key: "paper-feedforward-v3",
+  });
   const requestId = crypto.randomUUID();
   await logUsage("paper-feedforward", schoolId, data?.usage, {
     model: MODEL, request_id: requestId, operation: "paper_feedforward",

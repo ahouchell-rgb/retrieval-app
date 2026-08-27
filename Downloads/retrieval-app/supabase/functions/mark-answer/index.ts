@@ -5,11 +5,24 @@ import { overlayFor } from "../_shared/marking/registry.ts";
 import { checkNumericalMatch } from "../_shared/marking/numeric.ts";
 import {
   AI_PROVIDER, claimRequest, decodeRetrievalVerdict, finishRequest,
-  logShortcut, logUsage, validRequestId, type UsageEvent,
+  logShortcut, logUsage, OPENAI_API_KEY, OPENAI_MARKING_MODEL,
+  openAIResponse, openAIResponseText, validRequestId, type UsageEvent,
 } from "../_shared/ai.ts";
 
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
-const MODEL = "claude-haiku-4-5-20251001";
+const MODEL = OPENAI_MARKING_MODEL;
+
+const RETRIEVAL_VERDICT_SCHEMA = {
+  type: "object",
+  properties: {
+    c: { type: "boolean" },
+    m: { type: "integer" },
+    f: { type: "string" },
+    x: { type: "boolean" },
+    q: { type: "string", enum: ["h", "m", "l"] },
+  },
+  required: ["c", "m", "f", "x", "q"],
+  additionalProperties: false,
+};
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -140,58 +153,30 @@ async function callAiMark(
   marks: number,
   context: { school_id: string | null; request_id: string },
 ) {
-  const started = performance.now();
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 180,
-      system: [
-        // Two cached system blocks: the subject-agnostic engine (shared across every
-        // subject) then the per-subject overlay. base + overlay are the same size as the
-        // old single prompt, so per-subject caching is unchanged; if the engine alone
-        // clears the 4096-token floor it also caches once across all subjects.
-        { type: "text", text: BASE_RETRIEVAL, cache_control: { type: "ephemeral" } },
-        { type: "text", text: overlay, cache_control: { type: "ephemeral" } },
-      ],
-      messages: [{
-        role: "user",
-        // Per-question cache breakpoint: the question + model answer are identical for
-        // every pupil marked on this question, so this block (which sits on top of the
-        // always-warm system prompt) is cached and re-read across pupils whenever the
-        // same question is marked again inside the 5-min TTL — e.g. a whole class doing
-        // the same retrieval quiz. The student answer varies per pupil, so it is a
-        // separate, uncached block AFTER the breakpoint. Concatenated, the model sees
-        // exactly the same text as before, so marking is unchanged. (3 breakpoints total:
-        // engine, overlay and this question block; the API cap is 4.)
-        content: [
-          {
-            type: "text",
-            text: `Question (${marks} mark${marks > 1 ? 's' : ''}): ${question}\nModel answer: ${model_answer}`,
-            cache_control: { type: "ephemeral" },
-          },
-          { type: "text", text: `\nStudent wrote: ${student_answer}` },
-        ],
-      }],
-    }),
+  // Stable instructions come first so OpenAI's automatic prompt cache can reuse
+  // the marking engine. Pupil-specific text stays at the end and responses are
+  // never stored by the provider (see openAIResponse).
+  const result = await openAIResponse({
+    model: MODEL,
+    max_output_tokens: 180,
+    instructions: `${BASE_RETRIEVAL}\n\n${overlay}`,
+    input: `Question (${marks} mark${marks > 1 ? "s" : ""}): ${question}\nModel answer: ${model_answer}\n\nStudent wrote: ${student_answer}`,
+    schema: RETRIEVAL_VERDICT_SCHEMA,
+    schema_name: "retrieval_verdict",
+    reasoning_effort: "minimal",
+    prompt_cache_key: "retrieval-marker-v3",
   });
-  const data = await response.json();
+  const data = result.data;
   const event: UsageEvent = {
     call_label: label, source, operation: "mark_retrieval",
     provider: AI_PROVIDER, model: MODEL, usage: data?.usage,
-    latency_ms: performance.now() - started, success: response.ok,
+    latency_ms: result.latency_ms, success: result.ok,
   };
-  if (!response.ok) {
+  if (!result.ok) {
     await logUsage(sb, event, context);
-    throw new Error(`Anthropic ${response.status}: ${String(data?.error?.message || "request failed").slice(0, 180)}`);
+    throw new Error(`OpenAI ${result.status}: ${String(data?.error?.message || "request failed").slice(0, 180)}`);
   }
-  const text = data.content?.[0]?.text || "";
-  const clean = text.replace(/```json|```/g, "").trim();
+  const clean = openAIResponseText(data);
   try {
     return { verdict: decodeRetrievalVerdict(JSON.parse(clean)), event };
   } catch (error) {
@@ -533,7 +518,7 @@ Deno.serve(async (req: Request) => {
       if (cached) {
         bumpHitCount(cached.id);
         verdict = { correct: true, marks_awarded: cached.marks_awarded, feedback: cached.feedback || "Correct.", flagged: false, source: "cache" };
-      } else if (!ANTHROPIC_API_KEY) {
+      } else if (!OPENAI_API_KEY) {
         verdict = { correct: false, marks_awarded: 0, feedback: "AI marking not configured.", flagged: false, source: "fallback" };
       } else if (await overBackstop(schoolId)) {
         // Hard cost backstop: this school is >3x its fair-use allowance (see
