@@ -14,7 +14,7 @@ export function PublicHeader({ onLogin }) {
         </nav>
         <div className="public-actions">
           <a className="public-link-button" href="/pricing#contact">Book a pilot</a>
-          {onLogin ? <button className="public-button" onClick={onLogin}>Log in <Icon name="arrow" size={14} /></button> : <a className="public-button" href="/?login=1">Log in <Icon name="arrow" size={14} /></a>}
+          {onLogin ? <button className="public-button" onClick={onLogin}>Log in <Icon name="arrow" size={14} /></button> : <a className="public-button" href="/app?login=1">Log in <Icon name="arrow" size={14} /></a>}
         </div>
       </div>
     </header>

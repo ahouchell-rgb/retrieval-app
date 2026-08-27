@@ -162,6 +162,7 @@ export const sb = (() => {
       if (list.length) window.localStorage.setItem(PENDING_KEY, JSON.stringify(list));
       else window.localStorage.removeItem(PENDING_KEY);
     } catch { /* quota — best effort */ }
+    try { window.dispatchEvent(new CustomEvent("retrieval:pending-answers", { detail: { count: list.length } })); } catch { /* old browser */ }
   };
   const newRequestId = () => globalThis.crypto?.randomUUID?.() ||
     "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
@@ -188,8 +189,9 @@ export const sb = (() => {
 
   let flushing = false;
   const flushAnswers = async () => {
-    if (flushing || !token) return;
+    if (flushing || !token) return { synced: 0, remaining: readPending().length };
     flushing = true;
+    let synced = 0;
     try {
       let pending = readPending();
       while (pending.length) {
@@ -198,7 +200,9 @@ export const sb = (() => {
         if (!res?.recorded) break;                                         // reachable but not storing — keep queued
         pending = pending.slice(1);
         writePending(pending);
+        synced += 1;
       }
+      return { synced, remaining: pending.length };
     } finally { flushing = false; }
   };
 

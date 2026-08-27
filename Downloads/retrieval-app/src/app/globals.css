@@ -213,7 +213,7 @@ a { color: inherit; }
 .workspace-results { padding: 7px 12px 16px; }
 .workspace-hint { padding: 28px 12px; color: var(--fe-faint); font-size: 12px; text-align: center; }
 .workspace-results > button { width: 100%; min-height: 55px; display: grid; grid-template-columns: 52px 1fr auto; align-items: center; gap: 10px; padding: 9px 11px; border: 0; border-radius: 9px; background: transparent; color: var(--fe-ink); text-align: left; cursor: pointer; }
-.workspace-results > button:hover, .workspace-results > button:focus-visible { background: var(--fe-surface-subtle); }
+.workspace-results > button:hover, .workspace-results > button:focus-visible, .workspace-results > button.active { background: var(--fe-surface-subtle); }
 .workspace-result-type { color: var(--fe-brand); font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .workspace-results strong, .workspace-results small { display: block; }
 .workspace-results strong { font-size: 13px; }
@@ -228,11 +228,23 @@ a { color: inherit; }
 .workspace-inbox-list strong { display: block; font-size: 13px; line-height: 1.35; }
 .workspace-inbox-list p { margin: 4px 0 9px; color: var(--fe-muted); font-size: 11px; line-height: 1.45; }
 .workspace-inbox-list article button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--fe-brand); font: 750 11px/1 var(--font-plex),sans-serif; cursor: pointer; }
+.workspace-action-meta { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 7px; color: var(--fe-muted); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.workspace-action-meta .badge { font-size: 8px; }
+.workspace-action-meta .overdue { color: var(--fe-brand); }
+.workspace-action-buttons { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.workspace-action-controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.workspace-action-controls label { display: grid; gap: 4px; color: var(--fe-muted); font-size: 9px; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; }
+.workspace-action-controls select, .workspace-action-controls input { min-height: 32px; padding: 5px 8px; border: 1px solid var(--fe-border); border-radius: 7px; background: white; color: var(--fe-ink); font: 650 11px/1 var(--font-plex),sans-serif; }
 .workspace-unread-dot { width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--fe-brand); box-shadow: 0 0 0 3px var(--fe-brand-soft); }
 .draft-sync-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; }
 .draft-sync-pulse { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: sync-pulse .9s ease-in-out infinite alternate; }
 @keyframes sync-pulse { to { opacity: .25; } }
 .app-header-actions { display: flex; align-items: center; gap: 8px; }
+.connectivity-banner { position: sticky; top: 58px; z-index: 48; min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 7px 16px; border-bottom: 1px solid rgba(173,107,18,.24); background: #fff7e8; color: #7b4c0d; font-size: 12px; font-weight: 700; box-shadow: 0 4px 16px rgba(17,24,32,.06); }
+.connectivity-banner.syncing { border-color: rgba(22,131,94,.2); background: #edf9f4; color: var(--fe-green); }
+.connectivity-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px currentColor; opacity: .72; }
+.connectivity-banner button { margin-left: 4px; padding: 5px 9px; border: 1px solid currentColor; border-radius: 7px; background: transparent; color: inherit; font-size: 11px; font-weight: 800; cursor: pointer; }
+.connectivity-banner button:disabled { opacity: .55; cursor: wait; }
 .app-user-menu-wrap { position: relative; }
 .app-user-menu { position: absolute; top: calc(100% + 9px); right: 0; width: 225px; overflow: hidden; padding: 7px; border: 1px solid var(--fe-border); border-radius: 12px; background: white; color: var(--fe-ink); box-shadow: 0 20px 55px rgba(10,16,22,.22); }
 .app-user-menu-name { padding: 9px 10px 12px; margin-bottom: 5px; border-bottom: 1px solid var(--fe-border-soft); }

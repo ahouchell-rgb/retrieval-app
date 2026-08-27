@@ -1,11 +1,11 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SUPA_KEY, SUPA_URL, sb } from "../lib/supabase";
 import { C } from "../lib/theme";
 import { activityCountForPeriod, matchesActivityFilter } from "../lib/week";
 import { Btn, Inp } from "./ui";
 
-export function StudentList({ students, cls, clsTarget, selectedWeek = 0, activityWindowWeeks = 0, activityFilter = "all", onRefresh, parentTokens = {}, onGenerateToken, onRevokeToken }) {
+export function StudentList({ students, cls, clsTarget, selectedWeek = 0, activityWindowWeeks = 0, activityFilter = "all", focusStudentId = null, onFocusHandled, onRefresh, parentTokens = {}, onGenerateToken, onRevokeToken }) {
   const [expanded, setExpanded] = useState(null);
   const [newPw, setNewPw] = useState("");
   const [renaming, setRenaming] = useState(null); // studentId being renamed
@@ -17,6 +17,16 @@ export function StudentList({ students, cls, clsTarget, selectedWeek = 0, activi
   // First-party parent report link (replaces the old external parent-hub).
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const parentUrl = (id) => `${origin}/parent/${parentTokens[id]}`;
+
+  useEffect(() => {
+    if (!focusStudentId || !students.some(student => student.id === focusStudentId)) return;
+    setExpanded(focusStudentId);
+    const timer = window.setTimeout(() => {
+      document.getElementById(`student-card-${focusStudentId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      onFocusHandled?.();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [focusStudentId, students, onFocusHandled]);
 
   const callManage = async (action, studentId, extra = {}) => {
     setBusy(true); setMsg("");
@@ -79,7 +89,7 @@ export function StudentList({ students, cls, clsTarget, selectedWeek = 0, activi
         const isExpanded = expanded === s.id;
 
         return (
-          <div key={s.id} style={{ marginBottom: 4 }}>
+          <div id={`student-card-${s.id}`} key={s.id} style={{ marginBottom: 4, scrollMarginTop: 110 }}>
             <button onClick={() => { setExpanded(isExpanded ? null : s.id); setNewPw(""); setMsg(""); setConfirmDelete(null); setRenaming(null); setRenameDraft(""); }} style={{
               width: "100%", padding: "10px 10px", borderRadius: isExpanded ? "8px 8px 0 0" : 8, background: C.card2, border: "none", cursor: "pointer", fontFamily: "inherit", textAlign: "left",
               borderLeft: `3px solid ${!hasTarget ? C.bdr : metTarget ? C.grn : periodValid < periodTarget * 0.5 ? C.red : C.amb}`,

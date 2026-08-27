@@ -12,6 +12,17 @@ const frameAncestors = `'self' ${process.env.ALLOWED_FRAME_ANCESTORS || "https:/
 
 const nextConfig = {
   reactStrictMode: true,
+  async redirects() {
+    // Keep the public homepage statically generated while preserving every
+    // historic workspace/booklet deep-link. Next carries the original query
+    // string through to /app, where the client consumes it.
+    return ["login", "isci", "att", "cor", "from", "topic", "ref"].map(key => ({
+      source: "/",
+      has: [{ type: "query", key }],
+      destination: "/app",
+      permanent: false,
+    }));
+  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "uvzukwoxqhcxaxtzrziy.supabase.co", pathname: "/storage/v1/object/**" },

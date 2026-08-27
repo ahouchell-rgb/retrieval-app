@@ -6,6 +6,7 @@ import { isHoD, isModerator } from "../lib/roles";
 import { planAllows } from "../lib/plans";
 import { STAR_INTERVAL, WEEKLY_TARGET, activityCountForPeriod, formatWeekRange, getWeekBounds, matchesActivityFilter } from "../lib/week";
 import { readTeacherWorkspace, teacherWorkspaceUrl } from "../lib/workspaceState";
+import { normalizeTeacherSnapshot } from "../lib/dashboardSnapshots";
 import { useNotificationReads } from "../hooks/useCloudState";
 import { AdminPanel } from "./AdminPanel";
 import { AssignmentsPanel } from "./AssignmentsPanel";
@@ -18,9 +19,7 @@ import { LessonStarter } from "./LessonStarter";
 import { PaperManager } from "./PaperManager";
 import { QMgr } from "./QMgr";
 import { RequestCore } from "./RequestCore";
-import { Student } from "./Student";
 import { StudentList } from "./StudentList";
-import { StudentPaperAttempt } from "./StudentPaperAttempt";
 import { TopicSelector } from "./TopicSelector";
 import { Badge, Bar, Btn, Card, Dateline, Deck, EmptyState, ErrorState, Headline, Inp, Kicker, LoadingState, Pill, Section, TA } from "./ui";
 import { GuidedTour } from "./GuidedTour";
@@ -127,6 +126,8 @@ export function Teacher({ user }) {
   const [deliveries, setDeliveries] = useState({}); // topicId → {taught_at, notes}
   const [parentTokens, setParentTokens] = useState({}); // studentId → token UUID
   const [rawResps, setRawResps] = useState([]); // latest 12 weeks of response rows — used by dashboard drill-down and CSV export
+  const [rawLoadedFor, setRawLoadedFor] = useState(null);
+  const [rawLoading, setRawLoading] = useState(false);
   const [expandedQuestionStat, setExpandedQuestionStat] = useState(null); // question_id with wrong answers panel open
   const [topicBank, setTopicBank] = useState({}); // topic_id → count of non-archived questions (coverage denominator)
   const [expandedSpread, setExpandedSpread] = useState(null); // topic_id with per-student spread panel open
@@ -140,6 +141,9 @@ export function Teacher({ user }) {
   const [onboardingAssignmentCount, setOnboardingAssignmentCount] = useState(0);
   const [showGuidedPreview, setShowGuidedPreview] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [focusStudentId, setFocusStudentId] = useState(initialWorkspace.studentId || null);
+  const [focusTopicId, setFocusTopicId] = useState(initialWorkspace.topicId || null);
+  const [actionStates, setActionStates] = useState({});
   const notificationReads = useNotificationReads(user.id);
   // Onboarding panel: persists dismissal in localStorage so it never re-shows once closed.
   // Keyed per-user so a different teacher on the same browser sees their own state.
@@ -228,6 +232,62 @@ export function Teacher({ user }) {
     setDashLoading(true);
     setDashError("");
     setDash(null);
+    setRawResps([]);
+    setRawLoadedFor(null);
+
+    // Preferred production path: one compact aggregate replaces downloading and
+    // repeatedly filtering every answer in the browser. Keep the legacy path
+    // below as a rollout fallback until every environment has the RPC migration.
+    try {
+      const [snapshot, allT, ul, mems, dels, tokens, onboardingAssignments, flags, workflowRows] = await Promise.all([
+        sb.rpc("teacher_dashboard_snapshot", { p_class_id: c.id, p_weeks: 12 }),
+        sb.q("topics", { params: { subject_id: `eq.${c.subject_id}`, select: "*", order: "sort_order.asc" } }),
+        sb.q("class_topics", { params: { class_id: `eq.${c.id}`, select: "topic_id,recency_rank" } }),
+        sb.q("class_members", { params: { class_id: `eq.${c.id}`, select: "student_id,weekly_target_override" } }),
+        sb.q("lesson_deliveries", { params: { class_id: `eq.${c.id}`, select: "topic_id,taught_at,notes" } }),
+        sb.q("parent_tokens", { params: { class_id: `eq.${c.id}`, select: "student_id,token" } }),
+        sb.q("retrieval_assignments", { params: { class_id: `eq.${c.id}`, status: "neq.archived", select: "id", limit: "1" } }).catch(() => []),
+        sb.q("marking_flags", { params: {
+          class_id: `eq.${c.id}`, or: `(resolved.is.null,resolved.eq.false)`, order: "created_at.desc",
+          select: "id,response_id,student_id,question_id,student_answer,ai_feedback,ai_correct,student_reason,created_at,questions(question_text,marks,model_answer),profiles!marking_flags_student_id_fkey(display_name)",
+        } }).catch(() => []),
+        sb.q("teacher_action_states", { params: { teacher_id: `eq.${user.id}`, class_id: `eq.${c.id}`, select: "*" } }).catch(() => []),
+      ]);
+      const clsTarget = c.weekly_target ?? WEEKLY_TARGET;
+      const recency = ul.filter(item => item.recency_rank).map(item => ({ topicId: item.topic_id, rank: item.recency_rank })).sort((a, b) => a.rank - b.rank);
+      const normalized = normalizeTeacherSnapshot(snapshot, { clsTarget, recency, flags, memberCount: mems.length });
+      if (normalized) {
+        setTopics(allT);
+        setUnlocked(new Set(ul.map(item => item.topic_id)));
+        setOnboardingAssignmentCount((onboardingAssignments || []).length);
+        const deliveryMap = {}; dels.forEach(item => { deliveryMap[item.topic_id] = { taught_at: item.taught_at, notes: item.notes }; });
+        setDeliveries(deliveryMap);
+        const tokenMap = {}; tokens.forEach(item => { tokenMap[item.student_id] = item.token; });
+        setParentTokens(tokenMap);
+        setActionStates(Object.fromEntries((workflowRows || []).map(item => [item.action_key, item])));
+        setDash(normalized);
+        setDashLoading(false);
+
+        // Question-bank coverage is small, non-personal metadata. Keep it eager
+        // while all response-level evidence remains behind an explicit drill-down,
+        // but do not hold the visible dashboard behind this secondary request.
+        const topicIds = allT.map(item => item.id);
+        if (topicIds.length) {
+          sb.q("questions", { params: { topic_id: `in.(${topicIds.join(",")})`, archived: "eq.false", select: "id,topic_id" } })
+            .then(bankQuestions => {
+              const bank = {}; (bankQuestions || []).forEach(question => { bank[question.topic_id] = (bank[question.topic_id] || 0) + 1; });
+              setTopicBank(bank);
+            })
+            .catch(() => setTopicBank({}));
+        } else setTopicBank({});
+        return;
+      }
+    } catch (snapshotError) {
+      console.info("dashboard snapshot unavailable; using compatibility loader", snapshotError?.message || snapshotError);
+      sb.q("teacher_action_states", { params: { teacher_id: `eq.${user.id}`, class_id: `eq.${c.id}`, select: "*" } })
+        .then(rows => setActionStates(Object.fromEntries((rows || []).map(item => [item.action_key, item]))))
+        .catch(() => setActionStates({}));
+    }
     try {
       const oldestOverviewWeek = getWeekBounds(11).start.toISOString();
       const [allT, ul, resps, mems, dels, tokens, onboardingAssignments] = await Promise.all([
@@ -242,6 +302,7 @@ export function Teacher({ user }) {
       setTopics(allT); setUnlocked(new Set(ul.map(t => t.topic_id)));
       setOnboardingAssignmentCount((onboardingAssignments || []).length);
       setRawResps(resps || []);
+      setRawLoadedFor(c.id);
       // Bank size per topic — count of non-archived questions (incl. never-attempted),
       // used as the coverage denominator in the Question spread panel. One light query, runs on class load.
       try {
@@ -417,13 +478,97 @@ export function Teacher({ user }) {
 
   const navigateTab = (next, options) => {
     setTab(next);
-    updateWorkspaceUrl({ view: next }, options);
+    if (next !== "dashboard") setFocusStudentId(null);
+    if (next !== "topics") setFocusTopicId(null);
+    updateWorkspaceUrl({ view: next, ...(next === "dashboard" ? {} : { studentId: null }), ...(next === "topics" ? {} : { topicId: null }) }, options);
   };
 
   const selectClass = async (next, options) => {
     setCls(next || null);
-    updateWorkspaceUrl({ classId: next?.id || null }, options);
+    setFocusStudentId(null); setFocusTopicId(null);
+    updateWorkspaceUrl({ classId: next?.id || null, studentId: null, topicId: null }, options);
     if (next) await loadCls(next);
+  };
+
+  const openStudentFromSearch = (student) => {
+    if (!student) return;
+    setFocusStudentId(student.id);
+    setFocusTopicId(null);
+    setTab("dashboard");
+    updateWorkspaceUrl({ view: "dashboard", studentId: student.id, topicId: null });
+  };
+
+  const openTopicFromSearch = (topic) => {
+    if (!topic) return;
+    setFocusTopicId(topic.id);
+    setFocusStudentId(null);
+    setTab("topics");
+    updateWorkspaceUrl({ view: "topics", topicId: topic.id, studentId: null });
+  };
+
+  const loadRawResponses = async (targetClass = cls) => {
+    if (!targetClass) return [];
+    if (rawLoadedFor === targetClass.id) return rawResps;
+    setRawLoading(true);
+    try {
+      const oldestOverviewWeek = getWeekBounds(11).start.toISOString();
+      const rows = await sb.qAll("responses", { params: {
+        class_id: `eq.${targetClass.id}`,
+        answered_at: `gte.${oldestOverviewWeek}`,
+        select: "*,questions(question_text,model_answer,topic_id,topics(name)),profiles!responses_student_id_fkey(display_name)",
+        order: "answered_at.desc,id.desc",
+      } });
+      setRawResps(rows || []);
+      setRawLoadedFor(targetClass.id);
+      return rows || [];
+    } catch (error) {
+      notify("The summary is still available, but detailed answer evidence could not be loaded.", { title: "Detail unavailable", tone: "warning" });
+      return [];
+    } finally {
+      setRawLoading(false);
+    }
+  };
+
+  const updateTeacherAction = async (actionKey, patch) => {
+    if (!cls || !actionKey) return;
+    const previous = actionStates[actionKey] || null;
+    const now = new Date().toISOString();
+    const next = {
+      teacher_id: user.id,
+      class_id: cls.id,
+      action_key: actionKey,
+      status: "open",
+      priority: "normal",
+      owner_id: user.id,
+      due_at: null,
+      snoozed_until: null,
+      resolved_at: null,
+      note: null,
+      ...previous,
+      ...patch,
+      updated_at: now,
+    };
+    if (next.status === "resolved") next.resolved_at = next.resolved_at || now;
+    else next.resolved_at = null;
+    if (next.status !== "snoozed") next.snoozed_until = null;
+    setActionStates(current => ({ ...current, [actionKey]: next }));
+    try {
+      const [saved] = await sb.q("teacher_action_states", {
+        method: "POST",
+        params: { on_conflict: "teacher_id,class_id,action_key" },
+        prefer: "resolution=merge-duplicates,return=representation",
+        body: next,
+      });
+      if (saved) setActionStates(current => ({ ...current, [actionKey]: saved }));
+    } catch (error) {
+      setActionStates(current => {
+        const restored = { ...current };
+        if (previous) restored[actionKey] = previous;
+        else delete restored[actionKey];
+        return restored;
+      });
+      notify("The action change could not be saved.", { title: "Action Centre not updated", tone: "warning" });
+    }
   };
 
   useEffect(() => {
@@ -434,6 +579,8 @@ export function Teacher({ user }) {
       setSelectedWeek(state.week);
       setStudentActivityWeeks(state.activityWindow);
       setStudentActivityFilter(state.activityFilter);
+      setFocusStudentId(state.studentId);
+      setFocusTopicId(state.topicId);
       const nextClass = classes.find(item => item.id === state.classId);
       if (nextClass && nextClass.id !== cls?.id) { setCls(nextClass); loadCls(nextClass); }
     };
@@ -590,23 +737,36 @@ export function Teacher({ user }) {
     activityCountForPeriod(student, { selectedWeek, windowWeeks: studentActivityWeeks }),
     studentActivityFilter,
   )).length || 0;
-  const teacherActions = dash ? [
+  const generatedTeacherActions = dash ? [
     ...dash.students.filter(student => activityCountForPeriod(student, { selectedWeek }) === 0).slice(0, 6).map(student => ({
       key: `teacher-risk:${cls?.id}:${selectedWeek}:${student.id}`, tone: C.red,
       title: `${student.name} has no activity`, detail: `${selectedWeekStats.label} · ${selectedWeekStats.range}`,
-      label: "Copy nudge", run: () => copyPracticeNudge(student.name),
+      label: "Open pupil", priority: "high", run: () => openStudentFromSearch(student),
     })),
     ...(dash.flags || []).slice(0, 6).map(flag => ({
       key: `teacher-review:${flag.id}`, tone: C.amb,
       title: `${flag.profiles?.display_name || "A pupil"} appealed a mark`, detail: flag.questions?.question_text || "Mark needs teacher review",
-      label: "Review mark", run: () => navigateTab("review"),
+      label: "Review mark", priority: "urgent", run: () => navigateTab("review"),
     })),
     ...(dash.tp?.[0] ? [{
       key: `teacher-gap:${cls?.id}:${selectedWeek}:${dash.tp[0].id || dash.tp[0].name}`, tone: C.blue,
       title: `${dash.tp[0].name} is the weakest topic`, detail: `${dash.tp[0].pct}% accuracy across ${dash.tp[0].t} answers`,
-      label: "Plan starter", run: () => { setStarterTopicId(dash.tp[0].id || ""); navigateTab("starter"); },
+      label: "Plan starter", priority: "normal", run: () => { setStarterTopicId(dash.tp[0].id || ""); navigateTab("starter"); },
     }] : []),
+    ...(dash.interventions || []).filter(item => item.completedCount > 0).slice(0, 4).map(item => ({
+      key: `teacher-outcome:${item.assignmentId}`,
+      tone: Number(item.change) >= 10 ? C.grn : C.amb,
+      title: `${item.title}: ${item.completedCount}/${item.assignedCount} complete`,
+      detail: item.change == null ? "Open the assignment to review pupil outcomes" : `Accuracy moved ${Number(item.change) >= 0 ? "+" : ""}${Math.round(Number(item.change))} points from baseline`,
+      label: "View assignment",
+      priority: Number(item.change) < 0 ? "high" : "low",
+      run: () => navigateTab("assignments"),
+    })),
   ] : [];
+  const teacherActions = generatedTeacherActions
+    .map(action => ({ ...action, workflow: actionStates[action.key] || { status: "open", priority: action.priority || "normal", owner_id: user.id } }))
+    .filter(action => action.workflow.status !== "resolved")
+    .filter(action => action.workflow.status !== "snoozed" || !action.workflow.snoozed_until || new Date(action.workflow.snoozed_until) <= new Date());
 
   // ── CSV export helpers ──────────────────────────────────────────────────
   // Quote a value safely for CSV: wrap in quotes if it contains comma/quote/newline,
@@ -628,12 +788,13 @@ export function Teacher({ user }) {
   const safeFilename = (s) => (s || "class").replace(/[^a-z0-9_-]+/gi, "_").slice(0, 60);
   const todayStr = () => new Date().toISOString().slice(0, 10);
 
-  const exportSummaryCsv = () => {
+  const exportSummaryCsv = async () => {
     if (!dash || !cls) return;
+    const detailRows = rawLoadedFor === cls.id ? rawResps : await loadRawResponses(cls);
     // Build a per-student weakest-topic map from rawResps so we can include it.
     const studentWeakest = {};
     const sTopic = {};
-    rawResps.forEach(r => {
+    detailRows.forEach(r => {
       const sid = r.student_id;
       const tname = r.questions?.topics?.name || "—";
       if (!sTopic[sid]) sTopic[sid] = {};
@@ -653,7 +814,7 @@ export function Teacher({ user }) {
     });
     // Last-active map
     const lastActive = {};
-    rawResps.forEach(r => {
+    detailRows.forEach(r => {
       const t = new Date(r.answered_at).getTime();
       if (!lastActive[r.student_id] || t > lastActive[r.student_id]) lastActive[r.student_id] = t;
     });
@@ -735,15 +896,17 @@ export function Teacher({ user }) {
     w.document.close();
   };
 
-  const exportDetailedCsv = () => {
-    if (!cls || !rawResps.length) return;
+  const exportDetailedCsv = async () => {
+    if (!cls) return;
+    const detailRows = rawLoadedFor === cls.id ? rawResps : await loadRawResponses(cls);
+    if (!detailRows.length) return;
     const header = [
       "Answered at (ISO)", "Student name", "Email",
       "Topic", "Question", "Student answer", "Correct", "Marks awarded", "AI feedback", "Flagged",
     ];
     const rows = [header];
     // Sort by date so the export reads chronologically.
-    [...rawResps]
+    [...detailRows]
       .sort((a, b) => new Date(a.answered_at) - new Date(b.answered_at))
       .forEach(r => {
         const flagged = r.ai_feedback && r.ai_feedback.startsWith("FLAGGED:");
@@ -785,7 +948,8 @@ export function Teacher({ user }) {
       <TeacherWorkspaceTools
         classes={classes} cls={cls} topics={topics} students={dash?.students || []} actions={teacherActions}
         readIds={notificationReads.readIds} onMarkRead={notificationReads.markRead} onMarkAllRead={notificationReads.markManyRead}
-        onNavigate={navigateTab} onSelectClass={selectClass} onOpenMobileNav={() => setMobileNavOpen(true)}
+        onNavigate={navigateTab} onSelectClass={selectClass} onOpenStudent={openStudentFromSearch} onOpenTopic={openTopicFromSearch}
+        onUpdateAction={updateTeacherAction} onOpenMobileNav={() => setMobileNavOpen(true)}
       />
 
       {!loading && !dashLoading && !dashError && !onboardingDismissed && tab === "dashboard" ? (
@@ -878,10 +1042,10 @@ export function Teacher({ user }) {
                       style={{ padding: "5px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: `1px solid ${C.pri}`, background: C.priSoft, color: C.pri, cursor: (!dash || dash.students.length === 0) ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: (!dash || dash.students.length === 0) ? 0.5 : 1 }}>
                       ↓ Summary
                     </button>
-                    <button onClick={exportDetailedCsv} disabled={!rawResps.length}
-                      title="One row per response — every answer with the question, student answer, mark, and feedback"
-                      style={{ padding: "5px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: `1px solid ${C.bdr}`, background: "transparent", color: C.mid, cursor: !rawResps.length ? "not-allowed" : "pointer", fontFamily: "inherit", opacity: !rawResps.length ? 0.5 : 1 }}>
-                      ↓ Detailed
+                    <button onClick={exportDetailedCsv} disabled={rawLoading}
+                      title="Load and export one row per response with the question, answer, mark and feedback"
+                      style={{ padding: "5px 10px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: `1px solid ${C.bdr}`, background: "transparent", color: C.mid, cursor: rawLoading ? "wait" : "pointer", fontFamily: "inherit", opacity: rawLoading ? 0.6 : 1 }}>
+                      {rawLoading ? "Loading…" : "↓ Detailed"}
                     </button>
                     <button onClick={printReport} disabled={!dash || dash.students.length === 0}
                       title="Printable class report (Print / Save as PDF) for SLT or parents' evening"
@@ -1155,7 +1319,7 @@ export function Teacher({ user }) {
                   </label>
                 </div>
                 {dash.students.length === 0 ? <div style={{ color: C.dim, fontSize: 13 }}>No students yet. Share the join code above.</div> :
-                  <StudentList students={dash.students} cls={cls} clsTarget={dash.clsTarget} selectedWeek={selectedWeek} activityWindowWeeks={studentActivityWeeks} activityFilter={studentActivityFilter} onRefresh={() => loadCls(cls)} parentTokens={parentTokens} onGenerateToken={generateParentToken} onRevokeToken={revokeParentToken} />}
+                  <StudentList students={dash.students} cls={cls} clsTarget={dash.clsTarget} selectedWeek={selectedWeek} activityWindowWeeks={studentActivityWeeks} activityFilter={studentActivityFilter} focusStudentId={focusStudentId} onFocusHandled={() => setFocusStudentId(null)} onRefresh={() => loadCls(cls)} parentTokens={parentTokens} onGenerateToken={generateParentToken} onRevokeToken={revokeParentToken} />}
               </Section>
 
               <Section label="Top Misconceptions" teaser={dash.mis.length ? `${dash.mis.length} recurring` : "No data yet"}>
@@ -1172,9 +1336,16 @@ export function Teacher({ user }) {
                   ))}
               </Section>
 
+              {rawLoadedFor !== cls.id ? (
+                <Card style={{ padding: 16, marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", background: C.card2 }}>
+                  <div><div style={{ fontSize: 13, fontWeight: 750, color: C.txt }}>Detailed answer evidence</div><div style={{ marginTop: 4, fontSize: 11, color: C.dim }}>Kept out of the initial dashboard load. Open it only when you need question-level answers or coverage.</div></div>
+                  <Btn v="ghost" onClick={() => loadRawResponses(cls)} disabled={rawLoading}>{rawLoading ? "Loading evidence…" : "Load detailed evidence"}</Btn>
+                </Card>
+              ) : null}
+
               {/* Question stats — per-question accuracy with drill-down to actual wrong answers.
                   Sorted by wrong-rate; threshold of 3 attempts to avoid noise from one-off blips. */}
-              <Section label="Question stats" teaser="hardest questions first · tap for wrong answers">
+              {rawLoadedFor === cls.id ? <Section label="Question stats" teaser="hardest questions first · tap for wrong answers">
                 {(() => {
                   // Group responses by question_id
                   const qStats = {};
@@ -1259,7 +1430,7 @@ export function Teacher({ user }) {
                     );
                   });
                 })()}
-              </Section>
+              </Section> : null}
 
               <Section label="Topic Performance" teaser={dash.tp.length ? (() => { const w = [...dash.tp].sort((a, b) => a.pct - b.pct)[0]; return w ? `weakest: ${w.name} ${w.pct}%` : `${dash.tp.length} topics`; })() : "No data yet"}>
                 {dash.tp.length === 0 ? <div style={{ color: C.dim, fontSize: 13 }}>No data yet.</div> :
@@ -1279,7 +1450,7 @@ export function Teacher({ user }) {
                   so a "full" box means the whole bank has been worked through. The raw attempt count (volume)
                   sits alongside it. Subtopic == topic here (CSV subtopics are flattened to topics on import).
                   rawResps + dash.students already in scope; topicBank holds non-archived bank sizes. */}
-              <Section label="Question spread" teaser="coverage of each subtopic · tap for students">
+              {rawLoadedFor === cls.id ? <Section label="Question spread" teaser="coverage of each subtopic · tap for students">
                 <div style={{ fontSize: 11, color: C.dim, marginBottom: 14, lineHeight: 1.4 }}>
                   Bar fills as distinct questions get practised; figure after the dot is total attempts. Not accuracy.
                 </div>
@@ -1358,7 +1529,7 @@ export function Teacher({ user }) {
                     );
                   });
                 })()}
-              </Section>
+              </Section> : null}
 
               {/* ── Class settings: configuration, tucked below the monitoring view ── */}
               <div style={{ marginTop: 28, marginBottom: 2, fontSize: 10, fontWeight: 700, letterSpacing: ".16em", textTransform: "uppercase", color: C.dim }}>Class settings</div>
@@ -1443,7 +1614,7 @@ export function Teacher({ user }) {
           )}
 
           {tab === "topics" && (
-            <TopicSelector topics={topics} unlocked={unlocked} toggleT={toggleT} setUnlocked={setUnlocked} cls={cls} userId={user.id} deliveries={deliveries} onMarkTaught={markTaught} />
+            <TopicSelector topics={topics} unlocked={unlocked} toggleT={toggleT} setUnlocked={setUnlocked} cls={cls} userId={user.id} deliveries={deliveries} onMarkTaught={markTaught} focusTopicId={focusTopicId} onFocusHandled={() => setFocusTopicId(null)} />
           )}
 
           {tab === "questions" && (planAllows(user, "customQuestions")

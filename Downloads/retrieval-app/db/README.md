@@ -1,10 +1,11 @@
 # Database migrations
 
 The schema lives in the Supabase project (`uvzukwoxqhcxaxtzrziy`). These files
-record schema/security changes so they're reviewable and reproducible. Each file
+record schema/security changes so they're reviewable and reproducible. New CLI-generated
+migrations live in `supabase/migrations/`; the historical files remain in this directory. Each file
 header states whether it is **APPLIED** or **PENDING**; the table below is the
-index. Status was reconciled against the live database on **2026-08-26** (every
-migration listed is applied — see "Replaying on a fresh DB" for the out-of-band
+index. Status was reconciled against the live database on **2026-08-26** (all
+historical migrations are applied; explicitly PENDING rows are not — see "Replaying on a fresh DB" for the out-of-band
 steps that are deliberately *not* in these files).
 
 Apply one with:
@@ -50,6 +51,8 @@ psql "$DATABASE_URL" -f db/migrations/<file>.sql
 | `20260822_01_teacher_assignment_intervention_loop.sql` | APPLIED (2026-08-23) | Adds targeted retrieval assignments and measurable pupil outcomes; marking provenance/review audit fields; scheduled paper instructions, deadlines and attempt limits; supporting RLS, grants and integrity triggers. |
 | `20260823_01_restrict_intervention_rpc.sql` | APPLIED (2026-08-23) | Restores `class_intervention_list` to authenticated/service-only execution after the advisor caught an inherited anonymous grant. |
 | `20260825_01_workspace_continuity.sql` | APPLIED (2026-08-26) | Adds RLS-protected, owner-only pupil answer drafts and notification read state for cross-device continuity. |
+| `supabase/migrations/20260826180850_dashboard_snapshots_and_intervention_workflow.sql` | APPLIED (2026-08-26) | Adds RLS-respecting teacher/pupil dashboard snapshot RPCs and persistent teacher Action Centre state. The web app retains a compatibility loader for older environments. |
+| `supabase/migrations/20260826183638_action_state_foreign_key_indexes.sql` | APPLIED (2026-08-26) | Adds the two Action Centre foreign-key indexes recommended by the Supabase performance advisor. |
 
 ## Replaying on a fresh database
 

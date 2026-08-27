@@ -252,6 +252,24 @@ export function Student({ user }) {
     }
     setHome(current => ({ ...current, loading: true, error: "" }));
     try {
+      // Preferred home path: one compact, RLS-respecting snapshot replaces the
+      // two-round waterfall of raw retrieval and paper response downloads.
+      try {
+        const snapshot = await sb.rpc("student_home_snapshot", { p_weeks: 8 });
+        if (snapshot && Array.isArray(snapshot.classProgress) && Array.isArray(snapshot.tasks) && Array.isArray(snapshot.reviews)) {
+          const progress = new Map(snapshot.classProgress.map(item => [item.classId, Number(item.valid) || 0]));
+          const classSummaries = classRows.map(item => {
+            const valid = progress.get(item.id) || 0;
+            const target = effectiveWeeklyTarget(item);
+            return { ...item, valid, target, remaining: Math.max(0, target - valid), metTarget: valid >= target };
+          });
+          setHome({ loading: false, error: "", classSummaries, tasks: sortStudentTasks(snapshot.tasks), reviews: snapshot.reviews });
+          return;
+        }
+      } catch (snapshotError) {
+        console.info("student home snapshot unavailable; using compatibility loader", snapshotError?.message || snapshotError);
+      }
+
       const classIds = classRows.map(item => item.id);
       const eightWeeksAgo = getWeekBounds(7).start.toISOString();
       const [recentResponses, assignmentLinks, paperAssignments, paperAttempts, flags] = await Promise.all([

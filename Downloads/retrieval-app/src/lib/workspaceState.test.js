@@ -3,14 +3,14 @@ import { readTeacherWorkspace, teacherWorkspaceUrl } from "./workspaceState";
 
 describe("teacher workspace URL state", () => {
   it("reads valid deep-link state", () => {
-    expect(readTeacherWorkspace("?view=review&class=c1&week=3&activityWindow=4&activity=inactive")).toEqual({
-      view: "review", classId: "c1", week: 3, activityWindow: 4, activityFilter: "inactive",
+    expect(readTeacherWorkspace("?view=review&class=c1&week=3&activityWindow=4&activity=inactive&student=p1&topic=t1")).toEqual({
+      view: "review", classId: "c1", week: 3, activityWindow: 4, activityFilter: "inactive", studentId: "p1", topicId: "t1",
     });
   });
 
   it("falls back safely for unsupported values", () => {
     expect(readTeacherWorkspace("?view=secret&week=99&activityWindow=5&activity=missing")).toEqual({
-      view: null, classId: null, week: 0, activityWindow: 0, activityFilter: "all",
+      view: null, classId: null, week: 0, activityWindow: 0, activityFilter: "all", studentId: null, topicId: null,
     });
   });
 
@@ -18,5 +18,10 @@ describe("teacher workspace URL state", () => {
     expect(teacherWorkspaceUrl("https://example.com/?campaign=pilot&view=review&week=2", {
       view: "dashboard", week: 0, classId: "class-2",
     })).toBe("/?campaign=pilot&class=class-2");
+  });
+
+  it("writes exact pupil and topic destinations", () => {
+    expect(teacherWorkspaceUrl("https://example.com/app?class=c1", { view: "topics", topicId: "t1", studentId: null }))
+      .toBe("/app?class=c1&view=topics&topic=t1");
   });
 });

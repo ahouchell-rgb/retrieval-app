@@ -21,6 +21,8 @@ export function readTeacherWorkspace(search = "") {
     week: asBoundedInt(params.get("week"), 0, 0, 11),
     activityWindow: ACTIVITY_WINDOWS.has(activityWindow) ? activityWindow : 0,
     activityFilter: ACTIVITY_FILTERS.has(params.get("activity")) ? params.get("activity") : "all",
+    studentId: params.get("student") || null,
+    topicId: params.get("topic") || null,
   };
 }
 export function teacherWorkspaceUrl(currentUrl, patch = {}) {
@@ -36,5 +38,7 @@ export function teacherWorkspaceUrl(currentUrl, patch = {}) {
   setOrDelete("week", next.week, 0);
   setOrDelete("activityWindow", next.activityWindow, 0);
   setOrDelete("activity", next.activityFilter, "all");
+  setOrDelete("student", next.studentId, null);
+  setOrDelete("topic", next.topicId, null);
   return `${url.pathname}${url.search}${url.hash}`;
 }

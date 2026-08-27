@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { C } from "../lib/theme";
 import { Badge, Card, Headline, Inp, Kicker } from "./ui";
 
@@ -45,9 +45,21 @@ const unitLabel = (u) => ({
   B9: "B9 — Genetics",
 }[u] || u);
 
-export function TopicSelector({ topics, unlocked, toggleT, setUnlocked, cls, userId, deliveries = {}, onMarkTaught }) {
+export function TopicSelector({ topics, unlocked, toggleT, setUnlocked, cls, userId, deliveries = {}, onMarkTaught, focusTopicId = null, onFocusHandled }) {
   const [expanded, setExpanded] = useState({}); // scheme key → bool (explicit override)
   const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    if (!focusTopicId) return;
+    const topic = topics.find(item => item.id === focusTopicId);
+    if (!topic) return;
+    setSearch(topic.name);
+    const timer = window.setTimeout(() => {
+      document.getElementById(`topic-card-${focusTopicId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      onFocusHandled?.();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [focusTopicId, topics, onFocusHandled]);
 
   const filtered = search.trim()
     ? topics.filter(t => t.name.toLowerCase().includes(search.toLowerCase()))
@@ -68,7 +80,7 @@ export function TopicSelector({ topics, unlocked, toggleT, setUnlocked, cls, use
     const taught = deliveries[t.id];
     const taughtDate = taught ? new Date(taught.taught_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : null;
     return (
-      <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+      <div id={`topic-card-${t.id}`} key={t.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, scrollMarginTop: 110 }}>
         <button onClick={() => toggleT(t.id)} style={{
           flex: 1, display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 3, cursor: "pointer", textAlign: "left", fontFamily: "inherit", fontSize: 13,
           background: "transparent", border: "none", borderLeft: `3px solid ${on ? C.pri : "transparent"}`, color: on ? C.txt : C.mid, transition: "all .15s",
